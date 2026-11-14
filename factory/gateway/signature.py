@@ -1,0 +1,12 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+
+
+def verify_signature(body: bytes, signature: str | None, secret: str) -> bool:
+    """Verifies GitHub's `x-hub-signature-256` HMAC over the raw body."""
+    if not secret or not signature:
+        return False
+    expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected.encode(), signature.encode())
