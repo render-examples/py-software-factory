@@ -4,7 +4,7 @@ import base64
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
-from pydantic_ai import RunContext
+from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.tools import Tool
 from pydantic_ai.workspaces import CommandResult
 
@@ -75,7 +75,7 @@ async def bash(
 ) -> str:
     """Run a bash command in the repository with a bounded timeout."""
     if ctx.deps.read_only and (reason := reject_reason(command, ctx.deps.scratch_dir)):
-        raise ValueError(
+        raise ModelRetry(
             f"Command rejected by the read-only shell policy: {reason}. "
             "This agent cannot modify the working directory; inspect with read-only commands instead."
         )

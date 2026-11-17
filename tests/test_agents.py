@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from pydantic_ai import ModelRetry
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.workspaces import LocalWorkspaceBackend
@@ -13,6 +14,7 @@ from pydantic_ai.workspaces import LocalWorkspaceBackend
 from factory.agents.registry import AGENTS, PR_REVIEWER, TRIAGE
 from factory.agents.run import UploadedSandboxRunner, run_agent
 from factory.agents.shell_policy import reject_reason
+from factory.agents.tools import AgentDeps, bash
 from factory.agents.workspace import SandboxWorkspaceBackend
 from factory.runner.protocol import ResultEvent, RunnerInput
 from factory.sandbox.types import ExecResult, Sandbox
@@ -84,6 +86,14 @@ def test_registry_pins_tool_authority_and_placement() -> None:
     assert reject_reason("git status", "/tmp/factory") is None
     assert reject_reason("git commit -am nope", "/tmp/factory") is not None
     assert reject_reason("curl https://example.com", "/tmp/factory") is not None
+
+
+async def test_read_only_shell_rejection_is_recoverable_by_the_model() -> None:
+    class Context:
+        deps = AgentDeps(read_only=True)
+
+    with pytest.raises(ModelRetry, match="read-only shell policy"):
+        await bash(cast(Any, Context()), "pip install surprise")
 
 
 async def test_in_sandbox_input_contains_no_model_key(monkeypatch: pytest.MonkeyPatch) -> None:
