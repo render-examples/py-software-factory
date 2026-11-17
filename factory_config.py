@@ -4,11 +4,14 @@ from factory.config_model import FactoryConfig, Labels, Limits, RepoConfig, Sand
 
 CONFIG = FactoryConfig(
     repos={
-        "render-examples/render-factory-example-target": RepoConfig(
-            base_branch="main",
-            install="npm ci",
-            verify=("npm run build", "npm test"),
-            egress=("registry.npmjs.org",),
+        "jacobprall/streamlit-example": RepoConfig(
+            base_branch="master",
+            install=(
+                "uv venv /opt/factory/scratch/project-venv && "
+                "uv pip install --python /opt/factory/scratch/project-venv/bin/python -r requirements.txt"
+            ),
+            verify=("/opt/factory/scratch/project-venv/bin/python -m py_compile streamlit_app.py",),
+            egress=("pypi.org", "files.pythonhosted.org"),
         ),
     },
     labels=Labels(
