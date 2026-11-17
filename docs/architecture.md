@@ -26,9 +26,11 @@ Both placements use the same typed agent definition and sandboxed tools:
   Model access uses the sandbox-group credential broker. The provider key is never in runner input, files, command
   lines, or environment.
 
-The configured default is Triage and Spec Writer in-task; Implementer and PR Reviewer in-sandbox. Moving an agent
-is an authority decision, not just a performance toggle: update its placement, provider egress, broker
-availability, tests for tool authority, and the deployment verification described in the extension runbook.
+Agent definitions declare Triage and Spec Writer in-task, with Implementer and PR Reviewer in-sandbox. The
+deployment uses those in-sandbox placements only when `sandbox.brokered_model_access` is enabled. Otherwise all
+four loops run in Workflow compute while retaining exactly the same sandboxed tools. Moving an agent is an
+authority decision, not just a performance toggle: placement, provider egress, broker availability, and tool
+authority are tested together.
 
 ## Security boundaries
 

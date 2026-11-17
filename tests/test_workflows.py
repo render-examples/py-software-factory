@@ -6,6 +6,7 @@ from typing import Any, Protocol, cast
 import pytest
 from render.workflows.context import TaskRunMetadata
 
+from factory.agents.registry import IMPLEMENTER
 from factory.claims import ClaimOptions, RunIdentity, TaskResult
 from factory.config import require_repo
 from factory.github import Actor, IssueComment, StatusMarker, render_marker
@@ -14,6 +15,7 @@ from factory.stages import cancel_stage
 from factory.workflows.app import app
 from factory.workflows.autopilot import AutopilotDeps, autopilot_stage
 from factory.workflows.refresh_snapshot import refresh_snapshot_run
+from factory.workflows.services import effective_placement, model_egress
 from factory.workflows.triage import run_triage
 from tests.fixtures import REPO
 
@@ -236,6 +238,13 @@ def test_one_app_registers_exactly_six_tasks() -> None:
     assert all(
         task.options.retry is not None and task.options.retry.max_retries == 0 for task in app._registry._tasks.values()
     )
+
+
+def test_broker_setting_controls_model_placement_and_egress_together() -> None:
+    assert effective_placement(IMPLEMENTER, False) == "in-task"
+    assert model_egress(IMPLEMENTER, False) == ()
+    assert effective_placement(IMPLEMENTER, True) == "in-sandbox"
+    assert model_egress(IMPLEMENTER, True) == ("api.anthropic.com",)
 
 
 async def test_snapshot_refresh_checks_the_push_actors_current_permission() -> None:

@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from factory.config import require_repo, resolve_repo
-from factory.config_model import FactoryConfig, RepoConfig
+from factory.config_model import FactoryConfig, RepoConfig, SandboxSettings
 from tests.fixtures import REPO, TEST_CONFIG
 
 
@@ -43,6 +43,11 @@ def test_the_deployment_config_is_valid() -> None:
     import factory_config
 
     assert factory_config.CONFIG.repos
+
+
+def test_brokered_model_access_is_explicit_and_off_by_default() -> None:
+    assert SandboxSettings().brokered_model_access is False
+    assert SandboxSettings(brokered_model_access=True).brokered_model_access is True
 
 
 def test_rejects_unknown_keys_so_a_typo_fails_at_startup() -> None:

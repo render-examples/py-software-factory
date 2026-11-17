@@ -29,5 +29,6 @@ CONFIG = FactoryConfig(
     ),
     sandbox=SandboxSettings(
         timeout_seconds=4 * 60 * 60,
+        brokered_model_access=False,
     ),
 )

@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 from render import Render
 
+from factory.config import get_config
 from factory.sandbox.credentials import ANTHROPIC_CREDENTIAL, credential_matches, list_credentials
 from scripts.common import Check, load_environment, normalize_gateway_url, print_checks
 from scripts.preflight import local_checks
@@ -44,6 +45,12 @@ def _render_group_check(environment: dict[str, str]) -> Check:
 
 
 def _credential_check(environment: dict[str, str]) -> Check:
+    if not get_config().sandbox.brokered_model_access:
+        return Check(
+            "credential brokering",
+            True,
+            "disabled; model loops stay in Workflow tasks and provider keys stay out of sandboxes",
+        )
     group_id = environment.get("FACTORY_SANDBOX_GROUP_ID", "")
     api_key = environment.get("RENDER_ADMIN_API_KEY") or environment.get("RENDER_API_KEY")
     if not group_id or not api_key:
@@ -64,6 +71,8 @@ def _credential_check(environment: dict[str, str]) -> Check:
 
 async def _broker_probe(repository: str, installation_id: int) -> Check:
     """Prove header injection with one explicit, minimal model request."""
+    if not get_config().sandbox.brokered_model_access:
+        return Check("credential broker live probe", False, "enable sandbox.brokered_model_access first")
     from factory.agents.providers import provider_for_model
     from factory.agents.registry import TRIAGE
     from factory.config import require_repo

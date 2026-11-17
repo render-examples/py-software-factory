@@ -76,6 +76,30 @@ async def test_in_task_agent_returns_second_validated_output(tmp_path: Path) -> 
     assert result.model_dump(by_alias=True)["decision"] == "draft"
 
 
+async def test_in_sandbox_definition_can_safely_fall_back_to_task_placement(tmp_path: Path) -> None:
+    result = await run_agent(
+        PR_REVIEWER,
+        "review this",
+        trace_id="trace-fallback",
+        sandbox=FakeSandbox(),
+        placement="in-task",
+        model=output_model({"summary": "fine", "riskTier": "trivial", "comments": []}),
+        workspace_factory=lambda _sandbox: LocalWorkspaceBackend(tmp_path),
+    )
+    assert result.model_dump(by_alias=True)["riskTier"] == "trivial"
+
+
+async def test_in_task_definition_cannot_be_promoted_to_sandbox() -> None:
+    with pytest.raises(ValueError, match="cannot be promoted"):
+        await run_agent(
+            TRIAGE,
+            "triage this",
+            trace_id="trace-unsafe",
+            sandbox=FakeSandbox(),
+            placement="in-sandbox",
+        )
+
+
 def test_registry_pins_tool_authority_and_placement() -> None:
     assert [(agent.id, agent.tools, agent.max_turns, agent.placement) for agent in AGENTS] == [
         ("triage", ("read", "ls", "bash"), 40, "in-task"),

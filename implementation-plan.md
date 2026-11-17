@@ -64,9 +64,10 @@ triage stage ported from `triage.test.ts`.
 Exit: applying `factory:triage` on the example target produces a spec or questions, and the first live run
 confirms O4 and O6.
 
-### B. Spec-to-PR, with the Implementer in the sandbox
+### B. Spec-to-PR, with optional in-sandbox placement
 
-Proves the runner, wire protocol v3, and brokering.
+Proves Spec-to-PR in safe in-task fallback mode. When brokering is enabled, it
+also proves the runner, wire protocol v3, and brokered in-sandbox placement.
 
 | Module | Ported from | Notes |
 |---|---|---|
@@ -82,7 +83,8 @@ the event stream; the in-sandbox `run_agent` against a fake sandbox (runner lost
 output); invariant 12, asserting that no run input, uploaded file, or command contains a model key; the Spec-to-PR
 stage ported from `spec-to-pr.test.ts`.
 
-Exit: `factory:spec-approved` produces a draft PR, and the `doctor` brokering probe passes (O1).
+Exit: `factory:spec-approved` produces a draft PR. Enabling in-sandbox
+placement additionally requires the `doctor` brokering probe to pass (O1).
 
 ### C. PR Review, Cancel, and snapshot refresh
 

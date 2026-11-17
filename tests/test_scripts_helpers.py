@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from scripts.common import normalize_gateway_url, parse_env_file, validate_repository
+from scripts.doctor import _credential_check
 from scripts.preflight import blueprint_checks
 from scripts.setup_app import app_manifest, manifest_form
 from scripts.setup_render import render_handoff
@@ -75,3 +76,9 @@ def test_render_handoff_never_places_admin_key_in_runtime() -> None:
     assert "FACTORY_SANDBOX_GROUP_ID=sbg-abc123" in handoff
     assert "Never put RENDER_ADMIN_API_KEY" in handoff
     assert "POST /v1/messages" in handoff
+
+
+def test_doctor_accepts_intentionally_disabled_brokering() -> None:
+    check = _credential_check({})
+    assert check.ok
+    assert "disabled" in check.detail

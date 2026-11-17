@@ -27,8 +27,8 @@ def render_handoff(group_id: str | None = None) -> list[str]:
         ),
         f"Set FACTORY_SANDBOX_GROUP_ID={group} only on factory-workflows.",
         (
-            "Credential broker: api.anthropic.com, inject x-api-key, restrict to POST /v1/messages. "
-            "Use --apply-credential to create or rotate it with Render's generated API."
+            "Optional credential broker for in-sandbox loops: api.anthropic.com, inject x-api-key, restrict to "
+            "POST /v1/messages. Use --apply-credential only after enabling brokered placement."
         ),
         "Never put RENDER_ADMIN_API_KEY in either runtime environment group.",
     ]

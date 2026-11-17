@@ -10,8 +10,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from factory.agents.definition import AgentDefinition, Placement
+from factory.agents.providers import provider_for_model
 from factory.claims import Claim
-from factory.config import RepoContext
+from factory.config import RepoContext, get_config
 from factory.stages import PrReviewDeps, SpecToPrDeps, TriageDeps
 from factory.stages.refresh_snapshot import Snapshot
 
@@ -39,20 +41,32 @@ def get_services() -> WorkflowServices:
     return _services
 
 
+def effective_placement(definition: AgentDefinition, brokered_model_access: bool) -> Placement:
+    """Use sandbox placement only when the deployment explicitly enables its credential broker."""
+    return definition.placement if brokered_model_access else "in-task"
+
+
+def model_egress(definition: AgentDefinition, brokered_model_access: bool) -> tuple[str, ...]:
+    """Provider egress belongs only on a sandbox that runs the model loop."""
+    return (
+        (provider_for_model(definition.model).api_host,)
+        if effective_placement(definition, brokered_model_access) == "in-sandbox"
+        else ()
+    )
+
+
 def _production_services() -> WorkflowServices:
     """Import evolving agent/sandbox APIs only when a task actually starts."""
     from typing import cast
 
     from factory.agents import run_agent
-    from factory.agents.providers import provider_for_model
     from factory.agents.registry import IMPLEMENTER, PR_REVIEWER, SPEC_WRITER, TRIAGE
     from factory.changeset import publish
     from factory.github import git_data
     from factory.sandbox import BranchRef, PullRef, build_snapshot, open_sandbox, sandbox_client
     from factory.schemas import Implementation, Review, SpecDraft, TriageDecision
 
-    def model_host(model: str) -> tuple[str, ...]:
-        return (provider_for_model(model).api_host,)
+    brokered_model_access = get_config().sandbox.brokered_model_access
 
     def triage(claim: Claim) -> TriageDeps:
         async def open_for_branch(repo: RepoContext, branch: str):  # type: ignore[no-untyped-def]
@@ -85,7 +99,7 @@ def _production_services() -> WorkflowServices:
             return await open_sandbox(
                 repo,
                 BranchRef(branch),
-                model_egress=model_host(IMPLEMENTER.model),
+                model_egress=model_egress(IMPLEMENTER, brokered_model_access),
             )
 
         async def implement(message: str, sandbox: object) -> Implementation:
@@ -94,6 +108,7 @@ def _production_services() -> WorkflowServices:
                 message,
                 trace_id=claim.trace_id,
                 sandbox=cast(Any, sandbox),
+                placement=effective_placement(IMPLEMENTER, brokered_model_access),
                 timeout_seconds=60 * 60,
             )
             return cast(Implementation, output)
@@ -115,7 +130,7 @@ def _production_services() -> WorkflowServices:
                     cast(Any, pull).head_sha,
                     cast(Any, pull).base_ref,
                 ),
-                model_egress=model_host(PR_REVIEWER.model),
+                model_egress=model_egress(PR_REVIEWER, brokered_model_access),
             )
 
         async def review(message: str, sandbox: object) -> Review:
@@ -124,6 +139,7 @@ def _production_services() -> WorkflowServices:
                 message,
                 trace_id=claim.trace_id,
                 sandbox=cast(Any, sandbox),
+                placement=effective_placement(PR_REVIEWER, brokered_model_access),
             )
             return cast(Review, output)
 

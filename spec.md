@@ -66,7 +66,7 @@ default unless changed in review.
 | D5 | Split placement: some agents in-sandbox, some in-task | Decided |
 | D6 | Port all setup scripts, including `doctor` | Decided |
 | D7 | Gateway uses FastAPI | Decided |
-| D8 | Model key sits behind credential brokering | Decided |
+| D8 | Model key never enters a sandbox: use brokering for in-sandbox loops, or keep the loop in the task | Decided |
 | D9 | Every run is a task; Autopilot is a parent task that calls stage tasks | Decided |
 | D10 | Do not use the Pydantic AI `RenderWorkflows` integration on the main path | Proposed |
 | D11 | Replace the kernel and `submit` tool with Pydantic AI `output_type`, request limits and run timeout | Proposed |
@@ -174,6 +174,10 @@ Pydantic AI `Agent`. Prompts are copied verbatim from the original.
 | Implementer | read, ls, bash, edit, write | 150 | Opus | In-sandbox |
 | PR Reviewer | read, ls, bash | 100 | Sonnet | In-sandbox |
 
+These are declared placements. When `sandbox.brokered_model_access` is false,
+the runtime safely overrides in-sandbox definitions to in-task; their tools
+remain sandboxed and their provider host is omitted from sandbox egress.
+
 ### Kernel replacement (D11)
 
 | Original kernel duty | Replacement |
@@ -248,11 +252,12 @@ exactly.
 
 ## 7. Credential brokering (D8, D19, D20)
 
-Render sandbox groups hold credentials that the platform injects into
-matching outbound requests. Verified in the Python SDK source (1.8.0); not
-yet exercised in a live sandbox.
+Credential brokering is optional. Render sandbox groups can inject credentials
+into matching outbound requests. When this capability is disabled or
+unavailable, all model loops run in Workflow tasks and the model key still
+never enters a sandbox.
 
-- **Setup** creates one factory sandbox group and one credential per model
+- **Setup, when enabled,** creates one credential per model
   provider. For Anthropic: domain `api.anthropic.com`, header injection of
   `x-api-key`, restricted to `POST /v1/messages`.
 - **Runtime** creates every sandbox in that group.

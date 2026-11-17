@@ -11,7 +11,7 @@ from pydantic_ai.exceptions import RunTimedOut, UnexpectedModelBehavior, UsageLi
 from pydantic_ai.models import Model
 from pydantic_ai.workspaces import WorkspaceBackend
 
-from factory.agents.definition import AgentDefinition
+from factory.agents.definition import AgentDefinition, Placement
 from factory.agents.errors import AgentError
 from factory.agents.registry import get_agent
 from factory.agents.tools import AgentDeps
@@ -84,19 +84,27 @@ async def run_agent(
     *,
     trace_id: str,
     sandbox: Sandbox,
+    placement: Placement | None = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     model: Model | str | None = None,
     workspace_factory: WorkspaceFactory | None = None,
     sandbox_runner: SandboxRunner | None = None,
     storage: object | None = None,
 ) -> BaseModel:
-    """Run one registered agent in its declared placement and validate its output twice."""
+    """Run one registered agent and validate its output twice.
+
+    `placement` can safely move an in-sandbox definition into the Workflow task
+    when credential brokering is unavailable. It never grants additional tools.
+    """
     del storage  # Reserved for the follow-up spend ledger/conversation store.
     definition = get_agent(agent) if isinstance(agent, str) else agent
+    selected_placement = placement or definition.placement
+    if definition.placement == "in-task" and selected_placement == "in-sandbox":
+        raise ValueError(f"agent {definition.id} cannot be promoted from in-task to in-sandbox at runtime")
     if not message:
         raise ValueError("agent message must not be empty")
     try:
-        if definition.placement == "in-task":
+        if selected_placement == "in-task":
             output, usage = await _run_in_task(
                 definition,
                 message,
@@ -130,7 +138,7 @@ async def run_agent(
         FactoryEvent(
             trace_id=trace_id,
             type="agent.finished",
-            payload={"agent_id": definition.id, "placement": definition.placement, "usage": usage},
+            payload={"agent_id": definition.id, "placement": selected_placement, "usage": usage},
         )
     )
     return output

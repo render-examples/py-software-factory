@@ -59,21 +59,26 @@ Run the read-only/dry-run handoff:
 RENDER_API_KEY=... RENDER_WORKSPACE_ID=... uv run setup-render
 ```
 
-To create the sandbox group, explicitly use **mutating** `--apply-group` with a setup/admin key:
+Create the sandbox group explicitly:
 
 ```bash
-RENDER_ADMIN_API_KEY=... RENDER_WORKSPACE_ID=... ANTHROPIC_API_KEY=... \
-  uv run setup-render --apply-group --apply-credential
+RENDER_API_KEY=... RENDER_WORKSPACE_ID=... uv run setup-render --apply-group
 ```
 
 Put the resulting `sbg-...` ID in `FACTORY_SANDBOX_GROUP_ID` on `factory-workflows`. Populate both environment
 groups exactly as described in [configuration.md](../configuration.md). Never add `RENDER_ADMIN_API_KEY` to a
 service.
 
-The setup command uses the pinned SDK's generated credential API to configure the Anthropic credential on the
-group: exact domain `api.anthropic.com`, header `x-api-key`, restricted to `POST /v1/messages`. Credential
-administration requires an enabled workspace and an authorized setup key. If it is unavailable, stop; copying the
-model key into a sandbox violates the security model.
+Credential brokering is optional. The default `brokered_model_access=False` keeps every model loop in Workflow
+compute while tools remain sandboxed. To enable in-sandbox loops, configure the restricted credential with:
+
+```bash
+RENDER_ADMIN_API_KEY=... ANTHROPIC_API_KEY=... \
+  uv run setup-render --group-id sbg-... --apply-credential
+```
+
+Run the live broker probe, then set `brokered_model_access=True` and redeploy. If credential administration is
+unavailable, keep the safe default; never copy `ANTHROPIC_API_KEY` into a sandbox.
 
 ## 5. Configure repositories
 

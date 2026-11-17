@@ -51,6 +51,11 @@ class Limits(_Config):
 class SandboxSettings(_Config):
     timeout_seconds: int = Field(default=4 * 60 * 60, ge=60)
     """Render terminates a sandbox after this, even if the task that opened it crashed."""
+    brokered_model_access: bool = False
+    """Run agents in the sandbox only when its group has a verified provider credential.
+
+    When false, every model loop runs in the Workflow task while its tools still run in the sandbox.
+    """
 
 
 class FactoryConfig(_Config):

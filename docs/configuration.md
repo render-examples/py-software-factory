@@ -29,6 +29,18 @@ The gateway intentionally has no GitHub App private key and no model key.
 
 ## Sandbox credential broker
 
+Credential brokering is optional. `factory_config.py` controls it with:
+
+```python
+SandboxSettings(brokered_model_access=False)
+```
+
+With the default `False`, every model loop runs in the Workflow task and only its tools execute in the sandbox.
+The provider key remains confined to Workflow compute, and provider egress is omitted from every sandbox.
+
+Set it to `True` only after `doctor --remote --probe-brokering` passes. Implementer and PR Reviewer then use their
+declared in-sandbox placement.
+
 The intended Anthropic credential is attached to the factory sandbox group with:
 
 - exact domain `api.anthropic.com`
