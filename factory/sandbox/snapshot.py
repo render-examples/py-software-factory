@@ -7,7 +7,6 @@ import contextlib
 import hashlib
 import io
 import json
-import os
 import re
 import uuid
 import zipfile
@@ -19,13 +18,13 @@ from typing import Final, cast
 from urllib.parse import quote
 
 from render.experimental.sandbox.errors import SnapshotNotFoundError
-from render.experimental.sandbox.types import Snapshot
 
 from factory.config import RepoContext
 from factory.github.auth import github_token
 from factory.github.client import github_for
 from factory.sandbox.client import PacedSandboxClient, RenderSandbox
 from factory.sandbox.egress import builder_egress, egress_hint
+from factory.sandbox.operations import checked, configured_group_id, require_success
 from factory.sandbox.shell import SAFE_REF, shq
 from factory.sandbox.types import APP_DIR, REPO_DIR, RUN_AS, SANDBOX_ROOT, SCRATCH_DIR, SnapshotManifest
 
@@ -76,11 +75,6 @@ class RunnerBundle:
 def snapshot_name(repo: RepoContext) -> str:
     """The reusable snapshot name for one configured repository."""
     return re.sub(r"[^A-Za-z0-9_.-]", "-", f"factory-{repo.owner}-{repo.name}")
-
-
-def as_runner(*argv: str) -> str:
-    """Run an argv as the unprivileged user without joining unquoted values."""
-    return f"bash {shq(f'{APP_DIR}/as-runner.sh')} " + " ".join(shq(arg) for arg in argv)
 
 
 def credential_file(token: str) -> bytes:
@@ -156,15 +150,16 @@ def build_runner_bundle(root: Path = PROJECT_ROOT) -> RunnerBundle:
 async def ensure_runner_bundle(sandbox: RenderSandbox, bundle: RunnerBundle | None = None) -> bool:
     """Atomically replace the uploaded runner zip after checking its hash in the sandbox."""
     payload = bundle or await asyncio.to_thread(build_runner_bundle)
+    control_timeout = sandbox.client.timings.control_timeout_seconds
     current = await sandbox.exec(
         f"cat {shq(f'{APP_DIR}/runner.sha256')} 2>/dev/null",
-        timeout_seconds=sandbox.client.timings.verify_timeout_seconds,
+        timeout_seconds=control_timeout,
     )
     if current.stdout.strip() == payload.sha256:
         return False
     stage = f"/tmp/factory-runner-{uuid.uuid4().hex}"  # noqa: S108
     archive = f"{stage}/runner.zip"
-    await sandbox.exec(f"mkdir -m 700 {shq(stage)}")
+    await checked(sandbox, f"mkdir -m 700 {shq(stage)}", timeout_seconds=control_timeout)
     try:
         await sandbox.upload(archive, payload.data)
         command = " && ".join(
@@ -177,11 +172,14 @@ async def ensure_runner_bundle(sandbox: RenderSandbox, bundle: RunnerBundle | No
                 f"mv {shq(f'{APP_DIR}/runner.sha256.next')} {shq(f'{APP_DIR}/runner.sha256')}",
             )
         )
-        result = await sandbox.exec(command, timeout_seconds=sandbox.client.timings.verify_timeout_seconds)
-        if result.exit_code != 0:
-            raise RuntimeError(f"runner bundle install failed: {(result.stderr or result.stdout)[-2000:]}")
+        await checked(
+            sandbox,
+            command,
+            timeout_seconds=control_timeout,
+            operation="runner bundle install",
+        )
     finally:
-        await sandbox.exec(f"rm -rf -- {shq(stage)}")
+        await sandbox.exec(f"rm -rf -- {shq(stage)}", timeout_seconds=control_timeout)
     return True
 
 
@@ -199,7 +197,7 @@ async def build_snapshot(
     branch = repo.config.base_branch
     if not SAFE_REF.fullmatch(branch):
         raise ValueError(f"{repo.full_name}: unsupported base branch {branch!r}")
-    group_id = sandbox_group_id or _sandbox_group_id()
+    group_id = sandbox_group_id or configured_group_id()
     policy = builder_egress(repo)
     created = await client.create(
         name=f"builder-{snapshot_name(repo)}",
@@ -209,6 +207,7 @@ async def build_snapshot(
         sandbox_group_id=group_id,
     )
     sandbox = RenderSandbox(created.id, client)
+    control_timeout = client.timings.control_timeout_seconds
     token_reader = (deps or SnapshotDeps()).read_token or read_token
     try:
         await client.wait_running(sandbox.id)
@@ -217,7 +216,11 @@ async def build_snapshot(
         await sandbox.exec(f"mkdir -p -m 700 {shq(STAGING_CREDS)}")
         await sandbox.upload(f"{STAGING_CREDS}/github.com", credential_file(token))
         await _clone_and_scrub(sandbox, repo, sha)
-        await _checked(sandbox, f"chown -R {shq(RUN_AS)}: {shq(REPO_DIR)}")
+        await checked(
+            sandbox,
+            f"chown -R {shq(RUN_AS)}: {shq(REPO_DIR)}",
+            timeout_seconds=control_timeout,
+        )
         lockfile_hash = await compute_lockfile_hash(sandbox)
         install = repo.config.install.strip() if repo.config.install and repo.config.install.strip() else None
         if install:
@@ -233,11 +236,11 @@ async def build_snapshot(
         )
         await sandbox.upload(f"{APP_DIR}/manifest.json", _manifest_json(manifest))
         await _lock_down(sandbox)
-        verify = await sandbox.start_detached(
+        verify = await sandbox.exec(
             f"bash {shq(f'{APP_DIR}/verify.sh')}",
             timeout_seconds=client.timings.verify_timeout_seconds,
         )
-        _require_success(await sandbox.wait_detached(verify), "sandbox verify")
+        require_success(verify, "sandbox verify")
         snapshot = await client.create_snapshot(sandbox.id, snapshot_name(repo))
         await prune_snapshots(client, snapshot.sandbox_group_id, snapshot_name(repo))
         return BuiltSnapshot(snapshot.id, snapshot.sandbox_group_id, snapshot_name(repo), manifest)
@@ -246,7 +249,8 @@ async def build_snapshot(
 
 
 async def _prepare_runtime(sandbox: RenderSandbox) -> None:
-    await _checked(
+    control_timeout = sandbox.client.timings.control_timeout_seconds
+    await checked(
         sandbox,
         " && ".join(
             (
@@ -254,22 +258,28 @@ async def _prepare_runtime(sandbox: RenderSandbox) -> None:
                 f"mkdir -p {shq(APP_DIR)} {shq(f'{APP_DIR}/build')} {shq(REPO_DIR)} {shq(SCRATCH_DIR)}",
             )
         ),
+        timeout_seconds=control_timeout,
     )
     for relative in RUNTIME_SCRIPTS:
         await sandbox.upload(f"{APP_DIR}/{relative}", await asyncio.to_thread((SCRIPTS_DIR / relative).read_bytes))
-    await _checked(sandbox, f"chmod 0755 {shq(APP_DIR)}/*.sh {shq(f'{APP_DIR}/build')}/*.sh")
-    install = await sandbox.start_detached(
+    await checked(
+        sandbox,
+        f"chmod 0755 {shq(APP_DIR)}/*.sh {shq(f'{APP_DIR}/build')}/*.sh",
+        timeout_seconds=control_timeout,
+    )
+    install = await sandbox.exec(
         f"bash {shq(f'{APP_DIR}/install-tools.sh')}",
         timeout_seconds=sandbox.client.timings.prepare_timeout_seconds,
     )
-    _require_success(await sandbox.wait_detached(install), "tool install")
-    await _checked(sandbox, _create_runner_user_command())
+    require_success(install, "tool install")
+    await checked(sandbox, _create_runner_user_command(), timeout_seconds=control_timeout)
     await sandbox.upload(f"{APP_DIR}/env", _env_file())
     await sandbox.upload(f"{APP_DIR}/gitconfig", GITCONFIG.encode())
     await ensure_runner_bundle(sandbox)
 
 
 async def _clone_and_scrub(sandbox: RenderSandbox, repo: RepoContext, sha: str) -> None:
+    control_timeout = sandbox.client.timings.control_timeout_seconds
     url = f"https://github.com/{repo.owner}/{repo.name}.git"
     argv = (
         "git",
@@ -283,21 +293,21 @@ async def _clone_and_scrub(sandbox: RenderSandbox, repo: RepoContext, sha: str) 
         url,
         REPO_DIR,
     )
-    clone = await sandbox.start_detached(
+    clone = await sandbox.exec(
         " ".join(shq(arg) for arg in argv) + f" && git -C {shq(REPO_DIR)} checkout --quiet --detach {shq(sha)}",
         timeout_seconds=sandbox.client.timings.prepare_timeout_seconds,
     )
     clone_error: BaseException | None = None
     try:
-        _require_success(await sandbox.wait_detached(clone), "repository clone")
+        require_success(clone, "repository clone")
     except BaseException as error:
         clone_error = error
     scrub = await sandbox.exec(
         f"bash {shq(f'{APP_DIR}/build/scrub-credentials.sh')} "
         f"{shq(STAGING_CREDS)} {shq(REPO_DIR)} {shq(f'{SCRATCH_DIR}/home')}",
-        timeout_seconds=sandbox.client.timings.verify_timeout_seconds,
+        timeout_seconds=control_timeout,
     )
-    _require_success(scrub, "credential scrub")
+    require_success(scrub, "credential scrub")
     if clone_error is not None:
         raise clone_error
 
@@ -305,10 +315,10 @@ async def _clone_and_scrub(sandbox: RenderSandbox, repo: RepoContext, sha: str) 
 async def compute_lockfile_hash(sandbox: RenderSandbox) -> str:
     result = await sandbox.exec(
         f"bash {shq(f'{APP_DIR}/lockfile-hash.sh')} .",
-        timeout_seconds=sandbox.client.timings.verify_timeout_seconds,
+        timeout_seconds=sandbox.client.timings.control_timeout_seconds,
         as_runner=True,
     )
-    _require_success(result, "lockfile hash")
+    require_success(result, "lockfile hash")
     value = result.stdout.strip()
     if not SHA256_RE.fullmatch(value):
         raise RuntimeError(f"lockfile-hash.sh printed {value[:200]!r}")
@@ -316,20 +326,20 @@ async def compute_lockfile_hash(sandbox: RenderSandbox) -> str:
 
 
 async def run_install(sandbox: RenderSandbox, install: str, failure_hint: str = "") -> None:
-    execution = await sandbox.start_detached(
-        as_runner("bash", "-c", install),
+    result = await sandbox.exec(
+        install,
         timeout_seconds=sandbox.client.timings.prepare_timeout_seconds,
+        as_runner=True,
     )
-    result = await sandbox.wait_detached(execution)
     if result.exit_code != 0:
         detail = (result.stderr or result.stdout).strip()[-2000:]
         raise RuntimeError(f"install ({install}) exited {result.exit_code}: {detail}{failure_hint}")
     dirty = await sandbox.exec(
         "git status --porcelain --untracked-files=no",
-        timeout_seconds=sandbox.client.timings.verify_timeout_seconds,
+        timeout_seconds=sandbox.client.timings.control_timeout_seconds,
         as_runner=True,
     )
-    _require_success(dirty, "git status after install")
+    require_success(dirty, "git status after install")
     if dirty.stdout.strip():
         lines = "\n".join(dirty.stdout.strip().splitlines()[:20])
         raise RuntimeError(f"install ({install}) modified tracked files:\n{lines}")
@@ -359,27 +369,6 @@ async def prune_snapshots(
                 await client.delete_snapshot(sandbox_group_id, snapshot.id)
     except Exception:
         return
-
-
-def available_snapshot(snapshots: list[Snapshot], name: str) -> Snapshot | None:
-    candidates = [snapshot for snapshot in snapshots if snapshot.name == name and snapshot.status == "available"]
-    return max(candidates, key=lambda snapshot: snapshot.requested_at, default=None)
-
-
-async def _checked(sandbox: RenderSandbox, command: str) -> str:
-    result = await sandbox.exec(command, timeout_seconds=sandbox.client.timings.verify_timeout_seconds)
-    _require_success(result, command)
-    return result.stdout
-
-
-def _require_success(result: object, operation: str) -> None:
-    from factory.sandbox.types import ExecResult
-
-    if not isinstance(result, ExecResult):
-        raise TypeError("expected ExecResult")
-    if result.exit_code != 0:
-        detail = (result.stderr or result.stdout).strip()[-2000:]
-        raise RuntimeError(f"{operation} exited {result.exit_code}: {detail}")
 
 
 def _create_runner_user_command() -> str:
@@ -416,7 +405,11 @@ async def _lock_down(sandbox: RenderSandbox) -> None:
             f"rm -rf -- {shq(STAGING_DIR)}",
         )
     )
-    await _checked(sandbox, command)
+    await checked(
+        sandbox,
+        command,
+        timeout_seconds=sandbox.client.timings.control_timeout_seconds,
+    )
 
 
 def _manifest_json(manifest: SnapshotManifest) -> bytes:
@@ -435,10 +428,3 @@ def _manifest_json(manifest: SnapshotManifest) -> bytes:
 
 def runner_requirements_hash() -> str:
     return hashlib.sha256((SCRIPTS_DIR / "runner-requirements.txt").read_bytes()).hexdigest()
-
-
-def _sandbox_group_id() -> str:
-    value = os.environ.get("FACTORY_SANDBOX_GROUP_ID", "").strip()
-    if not value.startswith("sbg-"):
-        raise RuntimeError("FACTORY_SANDBOX_GROUP_ID must be an sbg-… sandbox group id")
-    return value

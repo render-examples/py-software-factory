@@ -26,12 +26,16 @@ class FakeSandbox:
     def __init__(self) -> None:
         self.uploads: dict[str, bytes] = {}
         self.commands: list[str] = []
+        self.runner_output = b""
 
     async def exec(self, command: str, *, timeout_seconds: float | None = None, as_runner: bool = False) -> ExecResult:
-        del timeout_seconds
-        if "factory.runner" in command:
-            assert as_runner
+        del timeout_seconds, as_runner
         self.commands.append(command)
+        if "run-agent.sh" in command:
+            input_path = next(path for path in self.uploads if path.endswith("/input.json"))
+            run_dir = input_path.removesuffix("/input.json")
+            self.uploads[f"{run_dir}.jsonl"] = self.runner_output
+            self.uploads[f"{run_dir}.exit"] = b"0\n"
         return ExecResult(0, "", "")
 
     async def upload(self, path: str, data: bytes) -> None:
@@ -165,7 +169,7 @@ async def test_default_sandbox_command_and_upload_contain_no_key(monkeypatch: py
         scratch_dir="/opt/factory/scratch",
     )
     await UploadedSandboxRunner().run(sandbox, run_input, 1)
-    serialized = b"".join(sandbox.uploads.values()).decode()
+    serialized = next(data for path, data in sandbox.uploads.items() if path.endswith("/input.json")).decode()
     assert secret not in serialized
     assert secret not in "\n".join(sandbox.commands)
     assert "ANTHROPIC_API_KEY" not in serialized
@@ -173,25 +177,14 @@ async def test_default_sandbox_command_and_upload_contain_no_key(monkeypatch: py
     assert json.loads(serialized)["protocol_version"] == 3
 
 
-async def test_default_runner_uses_detached_protocol_script_when_the_sandbox_supports_it() -> None:
-    class Detached(FakeSandbox):
-        async def start_detached(self, command: str, *, timeout_seconds: float) -> object:
-            self.commands.append(command)
-            input_path = next(path for path in self.uploads if path.endswith("/input.json"))
-            run_dir = input_path.removesuffix("/input.json")
-            event = ResultEvent(
-                at=datetime(2026, 11, 17, 12, tzinfo=UTC),
-                output={"summary": "fine", "riskTier": "trivial", "comments": []},
-                turns=1,
-            )
-            self.uploads[f"{run_dir}.jsonl"] = (event.model_dump_json() + "\n").encode()
-            self.uploads[f"{run_dir}.exit"] = b"0\n"
-            return object()
-
-        async def wait_detached(self, execution: object) -> object:
-            return execution
-
-    sandbox = Detached()
+async def test_default_runner_uses_protocol_script_through_standard_exec() -> None:
+    sandbox = FakeSandbox()
+    event = ResultEvent(
+        at=datetime(2026, 11, 17, 12, tzinfo=UTC),
+        output={"summary": "fine", "riskTier": "trivial", "comments": []},
+        turns=1,
+    )
+    sandbox.runner_output = (event.model_dump_json() + "\n").encode()
     run_input = RunnerInput(
         protocol_version=3,
         trace_id="trace",

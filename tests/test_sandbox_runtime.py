@@ -32,8 +32,8 @@ from factory.sandbox.client import ApiPacer, PacedSandboxClient, RenderSandbox, 
 from factory.sandbox.egress import builder_egress, task_egress
 from factory.sandbox.open import open_sandbox
 from factory.sandbox.shell import shq
-from factory.sandbox.snapshot import _env_file, as_runner, build_runner_bundle, credential_file
-from factory.sandbox.types import BranchRef, PullRef
+from factory.sandbox.snapshot import _env_file, build_runner_bundle, credential_file
+from factory.sandbox.types import BranchRef, ExecResult, PullRef
 
 
 def test_sandbox_environment_exports_values_for_child_processes() -> None:
@@ -154,6 +154,43 @@ async def test_process_pacer_reserves_slots_across_callers() -> None:
 
 
 @pytest.mark.asyncio
+async def test_client_builds_default_pacer_from_configured_interval() -> None:
+    clock = FakeClock()
+    client = PacedSandboxClient(
+        cast(SandboxApi, FakeApi()),
+        timings=SandboxTimings(min_request_interval_seconds=0.7),
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    async def operation() -> str:
+        return "ok"
+
+    await client.call(operation)
+    await client.call(operation)
+    assert clock.sleeps == pytest.approx([0.7])
+
+
+@pytest.mark.asyncio
+async def test_explicit_pacer_override_wins_over_timing_config() -> None:
+    clock = FakeClock()
+    client = PacedSandboxClient(
+        cast(SandboxApi, FakeApi()),
+        timings=SandboxTimings(min_request_interval_seconds=9),
+        pacer=ApiPacer(0.25, clock=clock, sleep=clock.sleep),
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    async def operation() -> str:
+        return "ok"
+
+    await client.call(operation)
+    await client.call(operation)
+    assert clock.sleeps == pytest.approx([0.25])
+
+
+@pytest.mark.asyncio
 async def test_call_retries_only_429_and_503_with_capped_backoff() -> None:
     clock = FakeClock()
     client = PacedSandboxClient(
@@ -231,7 +268,20 @@ async def test_close_is_idempotent_and_missing_sandbox_counts_as_closed() -> Non
 
 
 @pytest.mark.asyncio
-async def test_detached_start_quotes_command_and_poll_collects_result() -> None:
+async def test_short_exec_uses_sdk_stream() -> None:
+    api = FakeApi()
+    api.events = [SandboxExecOutput("stdout", "ok\n"), SandboxExecExit(0)]
+    client = PacedSandboxClient(cast(SandboxApi, api), pacer=ApiPacer(0))
+    sandbox = RenderSandbox("sbx-fake", client)
+
+    result = await sandbox.exec("printf ok", timeout_seconds=30)
+
+    assert result == ExecResult(0, "ok\n", "")
+    assert api.commands == ["printf ok"]
+
+
+@pytest.mark.asyncio
+async def test_long_exec_uses_private_detached_transport_and_quotes_command() -> None:
     api = FakeApi()
 
     def events(command: str) -> list[SandboxExecEvent]:
@@ -248,15 +298,14 @@ async def test_detached_start_quotes_command_and_poll_collects_result() -> None:
     sandbox = RenderSandbox("sbx-fake", client)
     hostile = "printf '%s' okay; touch /tmp/should-not-be-a-host-command"
 
-    execution = await sandbox.start_detached(hostile, timeout_seconds=30)
-    result = await sandbox.poll_detached(execution)
+    result = await sandbox.exec(hostile, timeout_seconds=60)
 
     start_argv = shlex.split(api.commands[0])
     assert start_argv[-1] == hostile
-    assert result is not None
     assert result.exit_code == 7
     assert result.stdout == "out\n"
     assert result.stderr == "err\n"
+    assert hostile not in api.commands[1:]
 
 
 def test_egress_uses_only_trusted_hosts_and_builder_has_no_model_host() -> None:
@@ -303,7 +352,6 @@ async def test_untrusted_refs_are_rejected_before_any_api_call(ref: BranchRef | 
 def test_shell_arguments_and_tokens_stay_out_of_command_syntax() -> None:
     hostile = "name'; touch /tmp/pwned; printf '"
     assert shlex.split(f"command {shq(hostile)}") == ["command", hostile]
-    assert shlex.split(as_runner("bash", "-c", hostile))[-1] == hostile
     assert credential_file("secret-token") == b"x-access-token\nsecret-token"
     with pytest.raises(ValueError, match="one non-empty line"):
         credential_file("secret\ninjected")

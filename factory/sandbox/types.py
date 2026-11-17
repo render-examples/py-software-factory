@@ -57,7 +57,11 @@ class Sandbox(Protocol):
     def id(self) -> str: ...
 
     async def exec(self, command: str, *, timeout_seconds: float | None = None, as_runner: bool = False) -> ExecResult:
-        """`as_runner` runs as RUN_AS from REPO_DIR with a scrubbed environment, instead of as root."""
+        """Run a command, selecting a proxy-safe transport from its timeout.
+
+        `as_runner` runs as RUN_AS from REPO_DIR with a scrubbed environment,
+        instead of as root.
+        """
         ...
 
     async def upload(self, path: str, data: bytes) -> None: ...

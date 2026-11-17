@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import PurePosixPath
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ValidationError
@@ -29,17 +29,10 @@ from factory.sandbox.shell import shq
 from factory.sandbox.types import APP_DIR, REPO_DIR, SCRATCH_DIR, Sandbox
 
 DEFAULT_TIMEOUT_SECONDS = 30 * 60
-RUNNER_ZIP = f"{APP_DIR}/runner.zip"
-RUNNER_PYTHON = "/opt/factory/venv/bin/python"
 
 
 class SandboxRunner(Protocol):
     async def run(self, sandbox: Sandbox, run_input: RunnerInput, timeout_seconds: float) -> tuple[int, str]: ...
-
-
-class DetachedSandbox(Sandbox, Protocol):
-    async def start_detached(self, command: str, *, timeout_seconds: float) -> object: ...
-    async def wait_detached(self, execution: object) -> object: ...
 
 
 class UploadedSandboxRunner:
@@ -49,29 +42,26 @@ class UploadedSandboxRunner:
         run_dir = str(PurePosixPath(SCRATCH_DIR) / "runs" / f"agent-{uuid4().hex}")
         input_path = f"{run_dir}/input.json"
         data = run_input.model_dump_json().encode()
-        await sandbox.exec(f"mkdir -m 0700 -p {shq(run_dir)}", timeout_seconds=60)
+        await sandbox.exec(f"mkdir -m 0700 -p {shq(run_dir)}", timeout_seconds=30)
         await sandbox.upload(input_path, data)
         try:
-            if hasattr(sandbox, "start_detached") and hasattr(sandbox, "wait_detached"):
-                detached = cast(DetachedSandbox, sandbox)
-                execution = await detached.start_detached(
-                    f"bash {shq(f'{APP_DIR}/run-agent.sh')} {shq(run_dir)} {shq(str(int(timeout_seconds)))}",
-                    timeout_seconds=timeout_seconds + 30,
-                )
-                await detached.wait_detached(execution)
-                stdout = (await sandbox.download(f"{run_dir}.jsonl")).decode(errors="replace")
-                status_text = (await sandbox.download(f"{run_dir}.exit")).decode().strip()
-                if not status_text.isdigit():
-                    raise RuntimeError(f"runner wrote invalid exit status {status_text!r}")
-                return int(status_text), stdout
-            command = f"env PYTHONPATH={shq(RUNNER_ZIP)} {shq(RUNNER_PYTHON)} -m factory.runner < {shq(input_path)}"
-            result = await sandbox.exec(command, timeout_seconds=timeout_seconds + 30, as_runner=True)
-            return result.exit_code, result.stdout
+            result = await sandbox.exec(
+                f"bash {shq(f'{APP_DIR}/run-agent.sh')} {shq(run_dir)} {shq(str(int(timeout_seconds)))}",
+                timeout_seconds=timeout_seconds + 30,
+            )
+            stdout = (await sandbox.download(f"{run_dir}.jsonl")).decode(errors="replace")
+            status_text = (await sandbox.download(f"{run_dir}.exit")).decode().strip()
+            if not status_text.isdigit():
+                raise RuntimeError(f"runner wrote invalid exit status {status_text!r}")
+            status = int(status_text)
+            if status != result.exit_code:
+                raise RuntimeError(f"runner exit status {status} disagrees with command exit {result.exit_code}")
+            return status, stdout
         finally:
             await sandbox.exec(
                 f"rm -rf -- {shq(run_dir)} {shq(f'{run_dir}.jsonl')} "
                 f"{shq(f'{run_dir}.stderr')} {shq(f'{run_dir}.exit')}",
-                timeout_seconds=60,
+                timeout_seconds=30,
             )
 
 

@@ -30,7 +30,7 @@ These follow from the findings above. Each one is Proposed until reviewed.
 
 | ID | Decision | Why |
 |---|---|---|
-| D23 | Long sandbox commands (agent run, install, verify, snapshot build) run detached: `sandbox/detach.sh` writes stdout, stderr, and the exit code to files, and the host polls with backoff from 2 to 10 seconds. Short commands use streaming exec. | The SDK's exec is a streaming request with a 45-second proxy read timeout and no exec timeout option. A 30-minute agent run can't depend on one long stream. |
+| D23 | `Sandbox.exec()` keeps one command contract and selects transport from the timeout. Proxy-safe control commands use streaming exec; longer commands run through `sandbox/detach.sh`, which writes stdout, stderr, and the exit code for host polling with backoff. | The SDK's exec is a streaming request with a 45-second proxy read timeout and no exec timeout option. A 30-minute agent run can't depend on one long stream. |
 | D25 | The runner is uploaded to each sandbox when it opens, as a hash-checked zip of `factory.runner`, `factory.agents`, and `factory.schemas`, and runs as `python -m factory.runner` with the zip on `PYTHONPATH`. Its dependencies are baked into the snapshot venv from `uv export --only-group runner`. | Code changes reach sandboxes with a Workflows deploy, as in the original. A dependency change changes the requirements hash recorded in the snapshot manifest, which triggers a rebuild. |
 | D26 | The runner builds its Anthropic client with a placeholder key, a hook that removes `x-api-key`, and system trust. | Brokering then works whether or not the platform replaces existing headers (O1). |
 | D28 | One process-wide pacer plus retries on 429 and 503 wraps every Sandbox API call: the factory's client, polling, and in-task tool calls. | The SDK doesn't retry or pace, and every workspace shares the 100 requests per minute limit. |
@@ -44,7 +44,7 @@ Proves the sandbox lifecycle, the snapshot, the tools, and in-task placement.
 
 | Module | Ported from | Notes |
 |---|---|---|
-| `factory/sandbox/client.py` | `client.ts` | Paced client over `RenderAsync().sandboxes`: waiting until running, collected exec with a 256 KB output tail and a timeout, detached exec (D23), upload, download, idempotent terminate, snapshot operations. |
+| `factory/sandbox/client.py` | `client.ts` | Paced client over `RenderAsync().sandboxes`: waiting until running, one `exec()` API with automatic streaming/detached transport (D23), bounded output, upload, download, idempotent terminate, snapshot operations. |
 | `factory/sandbox/egress.py` | `egress.ts` | `task_egress(repo, model_hosts)` and `builder_egress(repo)`. The builder adds the uv and PyPI hosts: `pypi.org`, `files.pythonhosted.org`, and GitHub's release-asset host. |
 | `factory/sandbox/snapshot.py` | `snapshot.ts` | Builder sandbox in the factory group, tool install, runner user, clone with a staged token, scrub, install, lockdown, manifest with lockfile and runner-requirements hashes, snapshot, keep the newest two. The base-branch head comes from the GitHub API rather than `ls-remote`. |
 | `factory/sandbox/open.py` | `sandbox.ts` | `open_sandbox(repo, ref, model_egress=...)` and `async with with_sandbox(...)`: restore by name (building inline once if none exists), verify, check the manifest, fetch the ref with a staged token, scrub, reinstall when lockfiles changed. |

@@ -97,6 +97,10 @@ class SandboxTimings:
     """Runtime budgets and the workspace-wide request cadence."""
 
     min_request_interval_seconds: float = 1.0
+    control_timeout_seconds: float = 30
+    """Timeout for short streaming control commands."""
+    streaming_exec_max_seconds: float = 40
+    """Longer commands use detached execution to stay below the SDK's 45-second read timeout."""
     retry_base_seconds: float = 2.0
     retry_max_seconds: float = 10.0
     retry_attempts: int = 5
@@ -104,7 +108,6 @@ class SandboxTimings:
     prepare_timeout_seconds: float = 40 * 60
     snapshot_timeout_seconds: float = 20 * 60
     verify_timeout_seconds: float = 5 * 60
-    exec_timeout_seconds: float = 10 * 60
 
 
 class ApiPacer:
@@ -135,9 +138,6 @@ class ApiPacer:
             await self._sleep(delay)
 
 
-_PROCESS_PACER = ApiPacer()
-
-
 def _error_status(error: BaseException) -> int | None:
     if isinstance(error, RateLimitError):
         return 429
@@ -164,7 +164,15 @@ class PacedSandboxClient:
     ) -> None:
         self.api = api
         self.timings = timings or SandboxTimings()
-        self._pacer = pacer or _PROCESS_PACER
+        if self.timings.control_timeout_seconds <= 0:
+            raise ValueError("control timeout must be positive")
+        if self.timings.streaming_exec_max_seconds < self.timings.control_timeout_seconds:
+            raise ValueError("streaming exec maximum cannot be shorter than the control timeout")
+        self._pacer = pacer or ApiPacer(
+            self.timings.min_request_interval_seconds,
+            clock=clock,
+            sleep=sleep,
+        )
         self._sleep = sleep
         self._clock = clock
 
@@ -242,7 +250,7 @@ class PacedSandboxClient:
         *,
         timeout_seconds: float | None = None,
     ) -> ExecResult:
-        timeout = timeout_seconds if timeout_seconds is not None else self.timings.exec_timeout_seconds
+        timeout = timeout_seconds if timeout_seconds is not None else self.timings.control_timeout_seconds
 
         async def collect() -> ExecResult:
             stdout = _OutputTail()
@@ -359,7 +367,7 @@ class _OutputTail:
 
 
 @dataclass(frozen=True)
-class DetachedExecution:
+class _DetachedExecution:
     sandbox_id: str
     directory: str
     timeout_seconds: float
@@ -385,9 +393,14 @@ class RenderSandbox:
         timeout_seconds: float | None = None,
         as_runner: bool = False,
     ) -> ExecResult:
+        timeout = timeout_seconds if timeout_seconds is not None else self.client.timings.control_timeout_seconds
+        if timeout <= 0:
+            raise ValueError("exec timeout must be positive")
         if as_runner:
             command = f"bash {shq(f'{APP_DIR}/as-runner.sh')} bash -c {shq(command)}"
-        return await self.client.exec(self.id, command, timeout_seconds=timeout_seconds)
+        if timeout > self.client.timings.streaming_exec_max_seconds:
+            return await self._exec_detached(command, timeout_seconds=timeout)
+        return await self.client.exec(self.id, command, timeout_seconds=timeout)
 
     async def upload(self, path: str, data: bytes) -> None:
         await self.client.upload(self.id, path, data)
@@ -395,23 +408,27 @@ class RenderSandbox:
     async def download(self, path: str) -> bytes:
         return await self.client.download(self.id, path)
 
-    async def start_detached(self, command: str, *, timeout_seconds: float) -> DetachedExecution:
+    async def _exec_detached(self, command: str, *, timeout_seconds: float) -> ExecResult:
+        execution = await self._start_detached(command, timeout_seconds=timeout_seconds)
+        return await self._wait_detached(execution)
+
+    async def _start_detached(self, command: str, *, timeout_seconds: float) -> _DetachedExecution:
         if timeout_seconds <= 0:
             raise ValueError("detached timeout must be positive")
         directory = f"/tmp/factory-detached-{uuid.uuid4().hex}"  # noqa: S108
         start = (
             f"bash {shq(f'{APP_DIR}/detach.sh')} {shq(directory)} {shq(str(timeout_seconds))} bash -c {shq(command)}"
         )
-        await self.client.check(self.id, start, timeout_seconds=self.client.timings.verify_timeout_seconds)
-        return DetachedExecution(self.id, directory, timeout_seconds)
+        await self.client.check(self.id, start, timeout_seconds=self.client.timings.control_timeout_seconds)
+        return _DetachedExecution(self.id, directory, timeout_seconds)
 
-    async def poll_detached(self, execution: DetachedExecution) -> ExecResult | None:
+    async def _poll_detached(self, execution: _DetachedExecution) -> ExecResult | None:
         self._check_execution(execution)
         exit_path = f"{execution.directory}/exit"
         probe = await self.client.exec(
             self.id,
             f"if [ -f {shq(exit_path)} ]; then cat {shq(exit_path)}; else exit 3; fi",
-            timeout_seconds=self.client.timings.verify_timeout_seconds,
+            timeout_seconds=self.client.timings.control_timeout_seconds,
         )
         if probe.exit_code == 3:
             return None
@@ -421,23 +438,23 @@ class RenderSandbox:
             self.client.exec(
                 self.id,
                 f"tail -c {_OUTPUT_LIMIT} {shq(f'{execution.directory}/stdout')}",
-                timeout_seconds=self.client.timings.verify_timeout_seconds,
+                timeout_seconds=self.client.timings.control_timeout_seconds,
             ),
             self.client.exec(
                 self.id,
                 f"tail -c {_OUTPUT_LIMIT} {shq(f'{execution.directory}/stderr')}",
-                timeout_seconds=self.client.timings.verify_timeout_seconds,
+                timeout_seconds=self.client.timings.control_timeout_seconds,
             ),
         )
         return ExecResult(int(probe.stdout.strip()), stdout.stdout, stderr.stdout)
 
-    async def wait_detached(self, execution: DetachedExecution) -> ExecResult:
+    async def _wait_detached(self, execution: _DetachedExecution) -> ExecResult:
         self._check_execution(execution)
         deadline = self.client._clock() + execution.timeout_seconds + 15
         delay = self.client.timings.retry_base_seconds
         try:
             while True:
-                result = await self.poll_detached(execution)
+                result = await self._poll_detached(execution)
                 if result is not None:
                     return result
                 if self.client._clock() >= deadline:
@@ -449,10 +466,10 @@ class RenderSandbox:
                 await self.client.exec(
                     self.id,
                     f"rm -rf -- {shq(execution.directory)}",
-                    timeout_seconds=self.client.timings.verify_timeout_seconds,
+                    timeout_seconds=self.client.timings.control_timeout_seconds,
                 )
 
-    def _check_execution(self, execution: DetachedExecution) -> None:
+    def _check_execution(self, execution: _DetachedExecution) -> None:
         if execution.sandbox_id != self.id:
             raise ValueError("detached execution belongs to another sandbox")
 

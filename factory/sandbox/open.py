@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import os
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
@@ -17,13 +16,13 @@ from render.experimental.sandbox.errors import SnapshotNotFoundError, SnapshotNo
 from factory.config import RepoContext, get_config
 from factory.sandbox.client import PacedSandboxClient, RenderSandbox, sandbox_client
 from factory.sandbox.egress import egress_hint, task_egress
+from factory.sandbox.operations import checked, configured_group_id, require_success
 from factory.sandbox.shell import SAFE_REF, shq
 from factory.sandbox.snapshot import (
     SHA1_RE,
     BuiltSnapshot,
     RunnerBundle,
     SnapshotDeps,
-    as_runner,
     build_snapshot,
     compute_lockfile_hash,
     credential_file,
@@ -41,7 +40,6 @@ from factory.sandbox.types import (
     RUN_AS,
     SCRATCH_DIR,
     BranchRef,
-    ExecResult,
     PullRef,
     SandboxRef,
     SnapshotManifest,
@@ -87,18 +85,18 @@ async def open_sandbox(
     _check_ref(ref)
     runtime = client or sandbox_client()
     dependencies = deps or OpenSandboxDeps()
-    group_id = sandbox_group_id or _sandbox_group_id()
+    group_id = sandbox_group_id or configured_group_id()
     policy = task_egress(repo, model_egress)
     sandbox_id = await _create_from_snapshot(runtime, repo, group_id, policy, dependencies)
     sandbox = RenderSandbox(sandbox_id, runtime)
     try:
         await runtime.wait_running(sandbox.id)
         await ensure_runner_bundle(sandbox, dependencies.runner_bundle)
-        verify = await sandbox.start_detached(
+        verify = await sandbox.exec(
             f"bash {shq(f'{APP_DIR}/verify.sh')}",
             timeout_seconds=runtime.timings.verify_timeout_seconds,
         )
-        _require_success(await sandbox.wait_detached(verify), "sandbox verify")
+        require_success(verify, "sandbox verify")
         manifest = _parse_manifest(await sandbox.download(f"{APP_DIR}/manifest.json"))
         if manifest.repo != repo.full_name:
             raise RuntimeError(f"snapshot in {sandbox.id} is for {manifest.repo}, not {repo.full_name}")
@@ -202,45 +200,51 @@ async def _fetch_ref(
     refspecs = [source]
     if isinstance(ref, PullRef) and ref.base_branch:
         refspecs.append(f"+refs/heads/{ref.base_branch}:refs/remotes/origin/{ref.base_branch}")
-    await _checked(sandbox, f"mkdir -m 700 {shq(directory)}")
+    control_timeout = sandbox.client.timings.control_timeout_seconds
+    await checked(sandbox, f"mkdir -m 700 {shq(directory)}", timeout_seconds=control_timeout)
     fetch_error: BaseException | None = None
     try:
         token = await (deps.read_token or read_token)(repo)
         await sandbox.upload(f"{directory}/github.com", credential_file(token))
-        await _checked(
+        await checked(
             sandbox,
             f"chown -R {shq(RUN_AS)}: {shq(directory)} && chmod 0600 {shq(f'{directory}/github.com')}",
+            timeout_seconds=control_timeout,
         )
-        command = as_runner(
-            "git",
-            *credential_helper_args(directory),
-            "fetch",
-            "--quiet",
-            "--no-tags",
-            "origin",
-            *refspecs,
+        command = " ".join(
+            shq(arg)
+            for arg in (
+                "git",
+                *credential_helper_args(directory),
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "origin",
+                *refspecs,
+            )
         )
-        execution = await sandbox.start_detached(
+        fetch = await sandbox.exec(
             command,
             timeout_seconds=sandbox.client.timings.prepare_timeout_seconds,
+            as_runner=True,
         )
-        _require_success(await sandbox.wait_detached(execution), "git fetch")
+        require_success(fetch, "git fetch")
     except BaseException as error:
         fetch_error = error
     scrub = await sandbox.exec(
         f"bash {shq(f'{APP_DIR}/build/scrub-credentials.sh')} "
         f"{shq(directory)} {shq(REPO_DIR)} {shq(f'{SCRATCH_DIR}/home')}",
-        timeout_seconds=sandbox.client.timings.verify_timeout_seconds,
+        timeout_seconds=control_timeout,
     )
-    _require_success(scrub, "credential scrub")
+    require_success(scrub, "credential scrub")
     if fetch_error is not None:
         raise fetch_error
     fetched = await sandbox.exec(
         "git rev-parse 'FETCH_HEAD^{commit}'",
-        timeout_seconds=sandbox.client.timings.verify_timeout_seconds,
+        timeout_seconds=control_timeout,
         as_runner=True,
     )
-    _require_success(fetched, "resolve FETCH_HEAD")
+    require_success(fetched, "resolve FETCH_HEAD")
     sha = fetched.stdout.strip()
     if not SHA1_RE.fullmatch(sha):
         raise RuntimeError(f"fetching {source} gave {sha[:100]!r}")
@@ -248,10 +252,10 @@ async def _fetch_ref(
         raise RuntimeError(f"head moved: {repo.full_name}#{ref.number} is at {sha}, expected {ref.head_sha}")
     checkout = await sandbox.exec(
         f"git checkout --quiet --detach {shq(sha)}",
-        timeout_seconds=sandbox.client.timings.verify_timeout_seconds,
+        timeout_seconds=control_timeout,
         as_runner=True,
     )
-    _require_success(checkout, "git checkout")
+    require_success(checkout, "git checkout")
     return sha
 
 
@@ -266,18 +270,6 @@ def _check_ref(ref: SandboxRef) -> None:
         raise ValueError(f"invalid head SHA {ref.head_sha!r}")
     if ref.base_branch is not None and not SAFE_REF.fullmatch(ref.base_branch):
         raise ValueError(f"unsupported base branch name {ref.base_branch!r}")
-
-
-async def _checked(sandbox: RenderSandbox, command: str) -> str:
-    result = await sandbox.exec(command, timeout_seconds=sandbox.client.timings.verify_timeout_seconds)
-    _require_success(result, command)
-    return result.stdout
-
-
-def _require_success(result: ExecResult, operation: str) -> None:
-    if result.exit_code != 0:
-        detail = (result.stderr or result.stdout).strip()[-2000:]
-        raise RuntimeError(f"{operation} exited {result.exit_code}: {detail}")
 
 
 def _parse_manifest(data: bytes) -> SnapshotManifest:
@@ -318,10 +310,3 @@ def _parse_manifest(data: bytes) -> SnapshotManifest:
 
 def re_full_sha256(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
-
-
-def _sandbox_group_id() -> str:
-    value = os.environ.get("FACTORY_SANDBOX_GROUP_ID", "").strip()
-    if not value.startswith("sbg-"):
-        raise RuntimeError("FACTORY_SANDBOX_GROUP_ID must be an sbg-… sandbox group id")
-    return value
