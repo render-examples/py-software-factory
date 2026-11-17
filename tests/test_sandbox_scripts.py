@@ -84,8 +84,9 @@ def test_verify_executes_with_exported_generated_environment(tmp_path: Path) -> 
     assert all(line.startswith("export ") for line in generated)
     tools = tmp_path / "bin"
     tools.mkdir()
-    (tools / "timeout").write_text('#!/bin/sh\nexec "$@"\n')
-    (tools / "timeout").chmod(0o755)
+    for tool in ("rg", "timeout"):
+        (tools / tool).write_text('#!/bin/sh\nexec "$@"\n')
+        (tools / tool).chmod(0o755)
     values = {
         "FACTORY_ROOT": str(tmp_path),
         "FACTORY_APP_DIR": str(app),
