@@ -233,6 +233,9 @@ def test_one_app_registers_exactly_six_tasks() -> None:
         "spec-to-pr",
         "triage",
     ]
+    assert all(
+        task.options.retry is not None and task.options.retry.max_retries == 0 for task in app._registry._tasks.values()
+    )
 
 
 async def test_snapshot_refresh_checks_the_push_actors_current_permission() -> None:

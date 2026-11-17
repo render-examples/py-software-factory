@@ -34,7 +34,7 @@ These follow from the findings above. Each one is Proposed until reviewed.
 | D25 | The runner is uploaded to each sandbox when it opens, as a hash-checked zip of `factory.runner`, `factory.agents`, and `factory.schemas`, and runs as `python -m factory.runner` with the zip on `PYTHONPATH`. Its dependencies are baked into the snapshot venv from `uv export --only-group runner`. | Code changes reach sandboxes with a Workflows deploy, as in the original. A dependency change changes the requirements hash recorded in the snapshot manifest, which triggers a rebuild. |
 | D26 | The runner builds its Anthropic client with a placeholder key, a hook that removes `x-api-key`, and system trust. | Brokering then works whether or not the platform replaces existing headers (O1). |
 | D28 | One process-wide pacer plus retries on 429 and 503 wraps every Sandbox API call: the factory's client, polling, and in-task tool calls. | The SDK doesn't retry or pace, and every workspace shares the 100 requests per minute limit. |
-| D29 | One `Workflows()` app in `factory/workflows/app.py`, started with `render-workflows factory.workflows.app:app`. Tasks are registered with `retry=None` and take one dict input; results are JSON dicts. | These are the SDK's rules for registration and serialization. |
+| D29 | One `Workflows()` app in `factory/workflows/app.py`, started with `render-workflows factory.workflows.app:app`. The app sets an explicit `Retry(max_retries=0, ...)` default; tasks take one dict input and return JSON dicts. | Render applies platform retries when retry is omitted, so side-effecting factory tasks must register an explicit zero-retry policy. |
 
 ## 3. Milestones
 
