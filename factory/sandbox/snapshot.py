@@ -401,7 +401,7 @@ def _env_file() -> bytes:
         f"FACTORY_PATH={SANDBOX_ROOT}/venv/bin:{SANDBOX_ROOT}/bin:"
         "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     )
-    return ("\n".join(values) + "\n").encode()
+    return ("\n".join(f"export {value}" for value in values) + "\n").encode()
 
 
 async def _lock_down(sandbox: RenderSandbox) -> None:

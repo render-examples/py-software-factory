@@ -32,8 +32,15 @@ from factory.sandbox.client import ApiPacer, PacedSandboxClient, RenderSandbox, 
 from factory.sandbox.egress import builder_egress, task_egress
 from factory.sandbox.open import open_sandbox
 from factory.sandbox.shell import shq
-from factory.sandbox.snapshot import as_runner, build_runner_bundle, credential_file
+from factory.sandbox.snapshot import _env_file, as_runner, build_runner_bundle, credential_file
 from factory.sandbox.types import BranchRef, PullRef
+
+
+def test_sandbox_environment_exports_values_for_child_processes() -> None:
+    lines = _env_file().decode().splitlines()
+    assert lines
+    assert all(line.startswith("export FACTORY_") for line in lines)
+    assert any(line.startswith("export FACTORY_RUN_AS=") for line in lines)
 
 
 class FakeClock:
