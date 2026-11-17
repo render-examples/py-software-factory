@@ -7,10 +7,10 @@ CONFIG = FactoryConfig(
         "jacobprall/streamlit-example": RepoConfig(
             base_branch="master",
             install=(
-                "uv venv /opt/factory/scratch/project-venv && "
-                "uv pip install --python /opt/factory/scratch/project-venv/bin/python -r requirements.txt"
+                "uv venv /opt/factory/scratch/home/project-venv && "
+                "uv pip install --python /opt/factory/scratch/home/project-venv/bin/python -r requirements.txt"
             ),
-            verify=("/opt/factory/scratch/project-venv/bin/python -m py_compile streamlit_app.py",),
+            verify=("/opt/factory/scratch/home/project-venv/bin/python -m py_compile streamlit_app.py",),
             egress=("pypi.org", "files.pythonhosted.org"),
         ),
     },
