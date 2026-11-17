@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ToolOutput
 from pydantic_ai.models import Model
 
 from factory.agents.tools import AgentDeps, ToolName, create_tools
@@ -54,7 +54,11 @@ class AgentDefinition:
             raise ValueError(f"agent {self.id}: requested tools exceed its authority")
         return Agent(
             model or self.model,
-            output_type=self.output_type,
+            output_type=ToolOutput(
+                self.output_type,
+                name="submit",
+                description="Submit the final structured result.",
+            ),
             system_prompt=self.prompt if system_prompt is None else system_prompt,
             deps_type=AgentDeps,
             tools=create_tools(selected_tools),

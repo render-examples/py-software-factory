@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ssl
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import cast
 
 import httpx2
@@ -19,8 +21,9 @@ async def _strip_anthropic_key(request: httpx2.Request) -> None:
     request.headers.pop("x-api-key", None)
 
 
-def brokered_model(model: str) -> Model:
-    """Build a direct Anthropic model that never possesses the real provider key."""
+@asynccontextmanager
+async def brokered_model(model: str) -> AsyncGenerator[Model]:
+    """Own a direct Anthropic model and close its externally supplied HTTP client."""
     provider = provider_for_model(model)
     provider_name, _, model_name = model.partition(":")
     if provider_name != "anthropic":
@@ -31,9 +34,12 @@ def brokered_model(model: str) -> Model:
         verify=context,
         event_hooks={"request": [_strip_anthropic_key]},
     )
-    anthropic = AnthropicProvider(
-        api_key=BROKERED_PLACEHOLDER_KEY,
-        base_url=f"https://{provider.api_host}",
-        http_client=client,
-    )
-    return AnthropicModel(cast(AnthropicModelName, model_name), provider=anthropic)
+    try:
+        anthropic = AnthropicProvider(
+            api_key=BROKERED_PLACEHOLDER_KEY,
+            base_url=f"https://{provider.api_host}",
+            http_client=client,
+        )
+        yield AnthropicModel(cast(AnthropicModelName, model_name), provider=anthropic)
+    finally:
+        await client.aclose()

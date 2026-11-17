@@ -27,6 +27,11 @@ The gateway intentionally has no GitHub App private key and no model key.
 
 `RENDER_ADMIN_API_KEY` is setup-only. It can be read by `setup-render`, but must never be added to either service.
 
+The built-in agents pin `claude-sonnet-5-5` for Triage and PR Reviewer, and
+`claude-opus-5-5` for Spec Writer and Implementer. Model IDs are explicit
+rather than provider aliases so they remain compatible with the pinned
+Pydantic AI model contract.
+
 ## Sandbox credential broker
 
 Credential brokering is optional. `factory_config.py` controls it with:

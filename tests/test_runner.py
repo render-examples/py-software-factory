@@ -1,17 +1,30 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import httpx2
+import pydantic_ai
+import pytest
+from pydantic_ai.models import Model
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 
 from factory.agents.registry import TRIAGE
 from factory.runner.main import main
-from factory.runner.model import _strip_anthropic_key
-from factory.runner.protocol import RUNNER_EVENT_ADAPTER, ErrorEvent, ResultEvent, RunnerEvent, RunnerInput
+from factory.runner.model import _strip_anthropic_key, brokered_model
+from factory.runner.protocol import (
+    RUNNER_EVENT_ADAPTER,
+    ErrorEvent,
+    ResultEvent,
+    RunnerEvent,
+    RunnerInput,
+    StartedEvent,
+)
 
 
 def runner_input(tmp_path: Path, *, max_turns: int = 40) -> RunnerInput:
@@ -38,6 +51,7 @@ def parse_events(lines: list[str]) -> list[RunnerEvent]:
 async def test_runner_valid_output_and_terminal_event(tmp_path: Path) -> None:
     async def respond(_messages: list[Any], info: AgentInfo):  # type annotation inferred by FunctionModel
         output = info.output_tools[0]
+        assert output.name == "submit"
         args: dict[str, Any] = {
             "decision": "draft",
             "questions": [],
@@ -64,6 +78,8 @@ async def test_runner_valid_output_and_terminal_event(tmp_path: Path) -> None:
     assert isinstance(events[-1], ResultEvent)
     assert sum(isinstance(event, (ResultEvent, ErrorEvent)) for event in events) == 1
     assert any(event.type == "usage" for event in events)
+    started = next(event for event in events if isinstance(event, StartedEvent))
+    assert started.harness_version == pydantic_ai.__version__
 
 
 async def test_runner_enforces_request_limit_and_emits_one_error(tmp_path: Path) -> None:
@@ -133,6 +149,96 @@ async def test_runner_timeout_has_timeout_exit_code(tmp_path: Path) -> None:
     assert code == 3
     assert isinstance(events[-1], ErrorEvent)
     assert events[-1].code == "timeout"
+
+
+@pytest.mark.parametrize(("valid", "expected_code"), [(True, 0), (False, 1)])
+async def test_runner_exits_owned_broker_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    valid: bool,
+    expected_code: int,
+) -> None:
+    async def respond(_messages: list[Any], info: AgentInfo):  # type annotation inferred by FunctionModel
+        if not valid:
+            yield "not structured"
+            return
+        output = info.output_tools[0]
+        yield {
+            0: DeltaToolCall(
+                name=output.name,
+                json_args=json.dumps(
+                    {
+                        "decision": "draft",
+                        "questions": [],
+                        "rationale": "ready",
+                        "findings": "inspected",
+                        "relevantPaths": [],
+                    }
+                ),
+                tool_call_id="result-owned",
+            )
+        }
+
+    exited = False
+
+    @asynccontextmanager
+    async def owned_model(_model_name: str) -> AsyncGenerator[Model]:
+        nonlocal exited
+        try:
+            yield FunctionModel(stream_function=respond)
+        finally:
+            exited = True
+
+    runner_module = importlib.import_module("factory.runner.main")
+    monkeypatch.setattr(runner_module, "brokered_model", owned_model)
+    lines: list[str] = []
+    code = await runner_module.main(runner_input(tmp_path).model_dump_json(), lines.append)
+    assert code == expected_code, lines
+    assert exited
+
+
+async def test_runner_does_not_enter_broker_context_for_injected_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    @asynccontextmanager
+    async def unexpected(_model_name: str) -> AsyncGenerator[Model]:
+        raise AssertionError("injected models are caller-owned")
+        yield FunctionModel()  # pragma: no cover
+
+    async def respond(_messages: list[Any], info: AgentInfo):  # type annotation inferred by FunctionModel
+        output = info.output_tools[0]
+        yield {
+            0: DeltaToolCall(
+                name=output.name,
+                json_args=json.dumps(
+                    {
+                        "decision": "draft",
+                        "questions": [],
+                        "rationale": "ready",
+                        "findings": "",
+                        "relevantPaths": [],
+                    }
+                ),
+                tool_call_id="result-injected",
+            )
+        }
+
+    runner_module = importlib.import_module("factory.runner.main")
+    monkeypatch.setattr(runner_module, "brokered_model", unexpected)
+    lines: list[str] = []
+    code = await runner_module.main(
+        runner_input(tmp_path).model_dump_json(),
+        lines.append,
+        model=FunctionModel(stream_function=respond),
+    )
+    assert code == 0, lines
+
+
+async def test_brokered_model_closes_its_http_client() -> None:
+    async with brokered_model(TRIAGE.model) as model:
+        client = model._provider._client._client
+        assert not client.is_closed
+    assert client.is_closed
 
 
 async def test_broker_hook_removes_client_authentication_header() -> None:

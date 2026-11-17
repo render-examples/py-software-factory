@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from factory.agents.definition import AgentDefinition, Placement
-from factory.agents.providers import provider_for_model
+from factory.agents.providers import model_hosts
 from factory.claims import Claim
 from factory.config import RepoContext, get_config
 from factory.stages import PrReviewDeps, SpecToPrDeps, TriageDeps
@@ -49,7 +49,7 @@ def effective_placement(definition: AgentDefinition, brokered_model_access: bool
 def model_egress(definition: AgentDefinition, brokered_model_access: bool) -> tuple[str, ...]:
     """Provider egress belongs only on a sandbox that runs the model loop."""
     return (
-        (provider_for_model(definition.model).api_host,)
+        model_hosts((definition.model,))
         if effective_placement(definition, brokered_model_access) == "in-sandbox"
         else ()
     )

@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast, get_args, get_origin
 
 import pytest
 from pydantic_ai import ModelRetry
 from pydantic_ai.messages import ModelResponse, ToolCallPart
+from pydantic_ai.models.anthropic import AnthropicModelName
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.workspaces import LocalWorkspaceBackend
 
@@ -61,6 +62,7 @@ def triage_output() -> dict[str, Any]:
 def output_model(data: dict[str, Any]) -> FunctionModel:
     def respond(_messages: list[Any], info: AgentInfo) -> ModelResponse:
         output = info.output_tools[0]
+        assert output.name == "submit"
         return ModelResponse(parts=[ToolCallPart(output.name, data)])
 
     return FunctionModel(respond)
@@ -114,6 +116,14 @@ def test_registry_pins_tool_authority_and_placement() -> None:
     assert reject_reason("git status", "/tmp/factory") is None
     assert reject_reason("git commit -am nope", "/tmp/factory") is not None
     assert reject_reason("curl https://example.com", "/tmp/factory") is not None
+
+
+def test_registry_uses_explicit_supported_anthropic_models() -> None:
+    literal = next(item for item in get_args(AnthropicModelName) if get_origin(item) is Literal)
+    supported = set(get_args(literal))
+    configured = {agent.model.partition(":")[2] for agent in AGENTS}
+    assert configured == {"claude-sonnet-5-5", "claude-opus-5-5"}
+    assert configured <= supported
 
 
 async def test_read_only_shell_rejection_is_recoverable_by_the_model() -> None:

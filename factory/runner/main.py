@@ -5,12 +5,14 @@ import inspect
 import json
 import sys
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 from pydantic_ai import AgentRunResultEvent, UsageLimits
+from pydantic_ai import __version__ as pydantic_ai_version
 from pydantic_ai.exceptions import RunTimedOut, UnexpectedModelBehavior, UsageLimitExceeded
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -23,6 +25,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import Model
 from pydantic_ai.workspaces import LocalWorkspaceBackend
 
+from factory.agents.definition import AgentDefinition
 from factory.agents.errors import RunnerErrorCode
 from factory.agents.registry import get_agent
 from factory.agents.tools import AgentDeps
@@ -88,14 +91,28 @@ async def main(input_text: str, write: Write, *, model: Model | None = None) -> 
     except (ValidationError, ValueError) as error:
         return await _fail(emitter, "invalid_input", f"invalid RunnerInput: {error}", RunnerExit.INVALID_INPUT)
 
-    selected_model = model or brokered_model(definition.model)
+    async with AsyncExitStack() as stack:
+        selected_model = model
+        if selected_model is None:
+            selected_model = await stack.enter_async_context(brokered_model(definition.model))
+        return await _run_agent(definition, run_input, emitter, selected_model)
+
+
+async def _run_agent(
+    definition: AgentDefinition,
+    run_input: RunnerInput,
+    emitter: EventWriter,
+    selected_model: Model,
+) -> int:
+    if run_input.cwd is None:
+        raise AssertionError("validated runner input has no cwd")
     agent = definition.build(model=selected_model, system_prompt=run_input.system_prompt, tools=run_input.tools)
     await emitter.emit(
         StartedEvent(
             at=_now(),
             agent_id=definition.id,
             harness="pydantic-ai",
-            harness_version="2.68.0",
+            harness_version=pydantic_ai_version,
             model=definition.model,
         )
     )

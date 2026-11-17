@@ -17,7 +17,7 @@ TRIAGE = AgentDefinition(
     tools=("read", "ls", "bash"),
     output_type=TriageDecision,
     max_turns=40,
-    model="anthropic:claude-sonnet-5",
+    model="anthropic:claude-sonnet-5-5",
     placement="in-task",
 )
 SPEC_WRITER = AgentDefinition(
@@ -26,7 +26,7 @@ SPEC_WRITER = AgentDefinition(
     tools=("read", "ls", "bash"),
     output_type=SpecDraft,
     max_turns=60,
-    model="anthropic:claude-opus-5",
+    model="anthropic:claude-opus-5-5",
     placement="in-task",
 )
 IMPLEMENTER = AgentDefinition(
@@ -35,7 +35,7 @@ IMPLEMENTER = AgentDefinition(
     tools=("read", "ls", "bash", "edit", "write"),
     output_type=Implementation,
     max_turns=150,
-    model="anthropic:claude-opus-5",
+    model="anthropic:claude-opus-5-5",
     placement="in-sandbox",
 )
 PR_REVIEWER = AgentDefinition(
@@ -44,7 +44,7 @@ PR_REVIEWER = AgentDefinition(
     tools=("read", "ls", "bash"),
     output_type=Review,
     max_turns=100,
-    model="anthropic:claude-sonnet-5",
+    model="anthropic:claude-sonnet-5-5",
     placement="in-sandbox",
 )
 

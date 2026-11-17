@@ -211,6 +211,8 @@ Each agent names a Pydantic AI model string. A small provider table maps each
 provider to its key environment variable and API hostname. The hostname feeds
 the egress allow-list and the brokered credential; the variable is read by
 the Workflows service for in-task agents and by setup for the credential.
+The built-ins pin explicit provider versions: `claude-sonnet-5-5` for Triage
+and PR Reviewer, and `claude-opus-5-5` for Spec Writer and Implementer.
 
 ## 6. Placement
 
