@@ -85,7 +85,7 @@ class ClaimOptions:
     repo: RepoContext
     subject: Subject
     task: str
-    """The registered task or flow name; recorded in the status marker and in events."""
+    """The registered task name; recorded in the status marker and in events."""
     title: str
     """The run's name in the status comment, such as "PR Reviewer"."""
     actor: str

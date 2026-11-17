@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Literal, Protocol
 
 from factory.events import FactoryEvent, emit, warn
-from factory.github import IssueComment, RunKind, RunState, StatusMarker, find_marked_comment, render_marker
+from factory.github import IssueComment, RunState, StatusMarker, find_marked_comment, render_marker
 
 WORKING_LABEL = "factory:working"
 """On the issue or PR while a GitHub run is active."""
@@ -50,14 +50,13 @@ class RunNotFoundError(Exception):
 
 
 class RunControl(Protocol):
-    """The Render calls that stop a previous run, injectable for tests. Reads and cancels task runs and flow
-    runs alike."""
+    """The Render calls that stop a previous task run, injectable for tests."""
 
-    async def get_status(self, run_id: str, kind: RunKind) -> str:
+    async def get_status(self, run_id: str) -> str:
         """The run's status. Raises RunNotFoundError when the run doesn't exist."""
         ...
 
-    async def cancel(self, run_id: str, kind: RunKind) -> None: ...
+    async def cancel(self, run_id: str) -> None: ...
 
     async def terminate_sandbox(self, sandbox_id: str) -> None:
         """Idempotent: a sandbox that no longer exists counts as terminated."""
@@ -88,10 +87,9 @@ async def stop_run(runs: RunControl, status: StatusMarker, context: StopContext)
     timeout, and the run never records how it ended; this records `run.finished` for it.
     """
     root_run_id = status.root_run_id
-    kind: RunKind = status.root_kind or "task"
-    active = await _is_run_active(runs, root_run_id, kind)
+    active = await _is_run_active(runs, root_run_id)
     if active:
-        await _cancel_active_run(runs, root_run_id, kind)
+        await _cancel_active_run(runs, root_run_id)
         ids = {"repo": context.repo, "subject": context.subject}
         if status.state == "running":
             payload = {
@@ -103,7 +101,7 @@ async def stop_run(runs: RunControl, status: StatusMarker, context: StopContext)
             emit(FactoryEvent(root_run_id, "run.finished", payload, run_id=status.run_id, **ids))
         if root_run_id != status.run_id:
             payload = {
-                "stage": status.root_stage or "workflow",
+                "stage": status.root_stage or "root_task",
                 "state": "cancelled",
                 "outcome": context.outcome,
                 "stopped_by": context.by,
@@ -118,36 +116,35 @@ async def stop_run(runs: RunControl, status: StatusMarker, context: StopContext)
     return active
 
 
-async def _is_run_active(runs: RunControl, run_id: str, kind: RunKind) -> bool:
-    """Whether a run is pending, running, or paused. A confirmed 404 is finished; unknown state fails closed."""
+async def _is_run_active(runs: RunControl, run_id: str) -> bool:
+    """Whether a task run is pending, running, or paused. A confirmed 404 is finished; unknown state fails closed."""
     try:
-        return await runs.get_status(run_id, kind) in _ACTIVE_STATUSES
+        return await runs.get_status(run_id) in _ACTIVE_STATUSES
     except RunNotFoundError:
         return False
     except Exception as error:
-        warn("could not read run; refusing to assume it finished", run_id=run_id, kind=kind, error=str(error))
+        warn("could not read run; refusing to assume it finished", run_id=run_id, error=str(error))
         raise
 
 
-async def _cancel_active_run(runs: RunControl, run_id: str, kind: RunKind) -> None:
+async def _cancel_active_run(runs: RunControl, run_id: str) -> None:
     """Cancels a run. A cancel that fails because the run just finished is fine; one that leaves it running
     raises."""
     try:
-        await runs.cancel(run_id, kind)
+        await runs.cancel(run_id)
     except Exception:
-        if await _is_run_active(runs, run_id, kind):
+        if await _is_run_active(runs, run_id):
             raise
 
 
 @dataclass(frozen=True)
 class RunIdentity:
-    """Which Workflows run is acting. For a flow, every step acts as the flow run."""
+    """Which Workflows task run is acting."""
 
     trace_id: str
-    """The root run: the root task run, or the flow run."""
+    """The root task run."""
     run_id: str
-    """This task run, or the flow run."""
-    root_kind: RunKind = "task"
+    """This task run."""
 
 
 @dataclass(frozen=True)
@@ -218,7 +215,7 @@ class StatusUpdate:
     number: int
     identity: RunIdentity
     task: str
-    """The registered task or flow name."""
+    """The registered task name."""
     title: str
     """The run's name in the comment, such as "PR Reviewer"."""
     state: RunState
@@ -227,7 +224,7 @@ class StatusUpdate:
     sandbox_id: str | None = None
     """The run's open sandbox, recorded while it's running so a run that stops this one can terminate it."""
     root_stage: str | None = None
-    """Registered name of the root task or flow."""
+    """Registered name of the root task."""
 
 
 async def set_status(gh: StatusGitHub, update: StatusUpdate) -> bool:
@@ -275,7 +272,6 @@ def _status_body(s: StatusUpdate, *, root_stage: str | None = None) -> str:
         StatusMarker(
             run_id=identity.run_id,
             trace_id=identity.trace_id,
-            root_kind=identity.root_kind if identity.root_kind != "task" else None,
             root_stage=root_stage or s.root_stage,
             stage=s.task,
             title=s.title,

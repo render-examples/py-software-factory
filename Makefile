@@ -5,7 +5,8 @@ check: lint typecheck test
 lint:
 	uv run ruff check .
 	uv run ruff format --check .
-	@if command -v shellcheck >/dev/null; then shellcheck sandbox/*.sh sandbox/build/*.sh; else echo "shellcheck not installed; skipping"; fi
+	@command -v shellcheck >/dev/null || { echo "shellcheck is required (see docs/quickstart.md)" >&2; exit 1; }
+	shellcheck sandbox/*.sh sandbox/build/*.sh
 
 typecheck:
 	uv run pyright

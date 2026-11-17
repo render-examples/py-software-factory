@@ -137,6 +137,7 @@ def test_render_review_moves_uncommentable_lines_to_the_body_most_severe_first()
     assert [c.line for c in payload.comments] == [12]
     assert "### More findings" in payload.body
     assert "**Critical**" in payload.body
+    assert "Add a limit." in payload.body
 
 
 def test_truncate_closes_a_fence_it_cuts_through() -> None:

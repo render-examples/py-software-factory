@@ -75,7 +75,7 @@ class TestStarts:
         }
         SpecToPrInput.model_validate(r.input)
 
-    def test_autopilot_label_on_an_issue_starts_the_autopilot_flow(self) -> None:
+    def test_autopilot_label_on_an_issue_starts_the_autopilot_task(self) -> None:
         r = route("issues", issue_labeled(labels().autopilot), DELIVERY)
         assert r == Start(
             "autopilot", {"repo": REPO, "installation_id": 7, "issue": 12, "actor": "maintainer"}, DELIVERY, "issue#12"
@@ -110,13 +110,17 @@ class TestStarts:
     def test_routes_a_repository_only_from_its_own_base_branch(self, case: RepositoryCase) -> None:
         payload = push(repository={"full_name": case.repo}, ref=f"refs/heads/{case.base_branch}")
         assert route("push", payload, DELIVERY) == Start(
-            "refresh-snapshot", {"repo": case.repo, "installation_id": 7, "sha": SHA}, f"{case.repo}@{SHA}"
+            "refresh-snapshot",
+            {"repo": case.repo, "installation_id": 7, "sha": SHA, "actor": "maintainer"},
+            f"{case.repo}@{SHA}",
         )
         assert isinstance(route("push", {**payload, "ref": "refs/heads/main"}, DELIVERY), Ignore)
 
     def test_push_to_the_base_branch_starts_refresh_snapshot_keyed_by_repo_at_sha(self) -> None:
         assert route("push", push(), DELIVERY) == Start(
-            "refresh-snapshot", {"repo": REPO, "installation_id": 7, "sha": SHA}, f"{REPO}@{SHA}"
+            "refresh-snapshot",
+            {"repo": REPO, "installation_id": 7, "sha": SHA, "actor": "maintainer"},
+            f"{REPO}@{SHA}",
         )
 
 

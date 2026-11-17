@@ -12,6 +12,7 @@ Permission = Literal["triage", "write", "maintain", "admin"]
 # A lowercase hostname with at least one dot, as the Sandbox egress rules take it; `*.` only as the leftmost label.
 _EGRESS_HOST = re.compile(r"^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _REPO_NAME = re.compile(r"^[\w.-]+/[\w.-]+$")
+_SAFE_BRANCH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]*$")
 
 
 class _Config(BaseModel):
@@ -84,8 +85,26 @@ def validate_config(config: FactoryConfig) -> None:
         where = f"factory_config.py repos[{_js(full_name)}]"
         if not _REPO_NAME.fullmatch(full_name):
             raise ValueError(f'{where}: the key must be "owner/name"')
+        if not _safe_branch(repo.base_branch):
+            raise ValueError(f"{where}: base_branch {_js(repo.base_branch)} is not a safe Git branch name")
         if repo.egress != "allow-all":
             assert_egress_hosts(repo.egress, where)
+    label_values = tuple(config.labels.model_dump().values())
+    if len(set(label_values)) != len(label_values):
+        raise ValueError("factory_config.py labels must be distinct")
+    if not config.command_prefix.strip() or any(c in config.command_prefix for c in "\r\n"):
+        raise ValueError("factory_config.py command_prefix must be a non-empty single line")
+
+
+def _safe_branch(branch: str) -> bool:
+    return (
+        len(branch) <= 200
+        and _SAFE_BRANCH.fullmatch(branch) is not None
+        and ".." not in branch
+        and "//" not in branch
+        and not branch.endswith(("/", ".", ".lock"))
+        and not any(segment.startswith(".") for segment in branch.split("/"))
+    )
 
 
 def _js(value: str) -> str:

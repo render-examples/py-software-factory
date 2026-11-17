@@ -31,7 +31,7 @@ class StrictModel(BaseModel):
 
 
 class TaskInput(BaseModel):
-    """A task or flow input. The gateway builds it; Workflows validates it again on arrival."""
+    """A task input. The gateway builds it; Workflows validates it again on arrival."""
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 

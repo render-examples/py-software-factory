@@ -1,4 +1,4 @@
-"""Task and flow inputs. Every one names its repository and the App installation to act through."""
+"""Task inputs. Every one names its repository and the App installation to act through."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ class PrReviewInput(RepoInput):
     pr: PositiveInt
     head_sha: Sha
     actor: ActorLogin
-    workflow_issue: PositiveInt | None = None
+    autopilot_issue: PositiveInt | None = None
     """Keeps an autopilot review under the issue-level root claim."""
 
 
@@ -72,3 +72,4 @@ class CancelInput(RepoInput):
 
 class RefreshSnapshotInput(RepoInput):
     sha: Sha
+    actor: ActorLogin

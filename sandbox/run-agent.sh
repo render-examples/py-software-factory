@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
-# Runs the agent runner once as the runner user from the repository checkout, bounded by coreutils timeout.
+# Runs protocol-v3 once as the runner user, bounded by coreutils timeout.
 # Usage: run-agent.sh <run_dir> <timeout_seconds>
-# <run_dir>/input.json is fed on stdin. <run_dir>/key is the model API key. It is read and deleted while <run_dir>
-# is still root-only (mode 700), before <run_dir> is handed to the runner user, and reaches the runner as the first
-# line of its stdin (--key-stdin), so it never exists as a file the runner user can read.
-# The runner's stdout (JSONL events) goes to <run_dir>.jsonl and its exit status to <run_dir>.exit (124 or
-# 137 on timeout). They sit beside <run_dir> rather than in it: <run_dir> is handed to the runner user,
-# while these stay root-owned, so the agent cannot rewrite what the host reads.
+# <run_dir>/input.json is fed directly on stdin. No model key enters the sandbox: Render's sandbox-group
+# credential broker injects it on the allowed provider request. Output files sit beside <run_dir>, root-owned,
+# so repository code cannot rewrite what the host reads.
 set -euo pipefail
 
 run_dir=${1:?usage: run-agent.sh <run_dir> <timeout_seconds>}
@@ -16,28 +13,16 @@ app=$(dirname "${BASH_SOURCE[0]}")
 # shellcheck source=/dev/null
 . "$app/env"
 
-key_file="$run_dir/key"
-trap 'rm -f "$key_file"' EXIT
-if [ ! -f "$key_file" ]; then
-	echo "run-agent: $key_file is missing" >&2
-	exit 1
-fi
-key=$(<"$key_file")
-rm -f "$key_file"
-if [ -e "$key_file" ]; then
-	echo "run-agent: cannot delete $key_file" >&2
-	exit 1
-fi
-if [[ $key == *$'\n'* ]]; then
-	echo "run-agent: $key_file holds more than one line" >&2
+if [ ! -f "$run_dir/input.json" ]; then
+	echo "run-agent: $run_dir/input.json is missing" >&2
 	exit 1
 fi
 if [ "$(id -u)" = 0 ] && [ "$FACTORY_RUN_AS" != root ]; then chown -R "$FACTORY_RUN_AS": "$run_dir"; fi
 
 set +e
-# key is never exported and printf is a bash builtin, so it reaches no process's argv or environment.
-{ printf '%s\n' "$key"; cat "$run_dir/input.json"; } |
-	timeout --kill-after=10s "$seconds" bash "$app/as-runner.sh" "$FACTORY_RUNNER_NODE" "$FACTORY_APP_DIR/runner/runner.mjs" --key-stdin >"$run_dir.jsonl"
+cat "$run_dir/input.json" |
+	timeout --kill-after=10s "$seconds" bash "$app/as-runner.sh" \
+		env PYTHONPATH="$FACTORY_APP_DIR/runner.zip" "$FACTORY_PYTHON" -m factory.runner >"$run_dir.jsonl" 2>"$run_dir.stderr"
 status=${PIPESTATUS[1]}
 set -e
 echo "$status" >"$run_dir.exit"

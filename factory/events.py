@@ -15,10 +15,10 @@ EventType = Literal["run.finished", "agent.finished"]
 
 @dataclass(frozen=True)
 class FactoryEvent:
-    """How a task run, flow run, or agent run ended."""
+    """How a task run or agent run ended."""
 
     trace_id: str
-    """The root run: the root task run, or the flow run."""
+    """The root task run."""
     type: EventType
     payload: dict[str, Any] = field(default_factory=dict[str, Any])
     run_id: str | None = None

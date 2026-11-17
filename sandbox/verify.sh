@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Verifies a factory sandbox: the builder before it is snapshotted, and every sandbox restored from the snapshot.
-# Fails unless the layout, tools, and credential hygiene are as built, the checkout is at the manifest's commit
-# and writable by the runner user, scratch is writable, and the runner passes its self-test. As root it also
-# confirms the runner's node is non-dumpable. Prints one JSON line describing the sandbox.
+# Fails unless the layout, Python runtime, credential hygiene, checkout, and permissions are as built.
+# The model key is brokered and never enters this process, so there is no execute-only/non-dumpable probe.
 # Usage: verify.sh
 set -euo pipefail
 
@@ -19,12 +18,14 @@ as_runner() { bash "$app/as-runner.sh" "$@"; }
 # ── Layout and tools ─────────────────────────────────────────────────────
 
 for d in "$FACTORY_APP_DIR" "$FACTORY_REPO_DIR" "$FACTORY_SCRATCH_DIR"; do [ -d "$d" ] || fail "missing $d"; done
-for f in as-runner.sh run-agent.sh lockfile-hash.sh build/git-credential-staged.sh build/scrub-credentials.sh runner/runner.mjs manifest.json; do
+for f in as-runner.sh run-agent.sh detach.sh lockfile-hash.sh build/git-credential-staged.sh build/scrub-credentials.sh runner.zip runner.sha256 manifest.json; do
 	[ -f "$FACTORY_APP_DIR/$f" ] || fail "missing $FACTORY_APP_DIR/$f"
 done
 for tool in git rg timeout sha256sum; do PATH="$FACTORY_PATH" command -v "$tool" >/dev/null || fail "missing $tool"; done
-node_version=$("$FACTORY_NODE" -p 'process.versions.node') || fail "node does not run"
-[ "${node_version%%.*}" -ge 22 ] || fail "node $node_version is older than 22"
+python_version=$("$FACTORY_PYTHON" -c 'import platform; print(platform.python_version())') || fail "python does not run"
+case "$python_version" in 3.12.*) ;; *) fail "python $python_version is not 3.12" ;; esac
+bundle_hash=$(sha256sum "$FACTORY_APP_DIR/runner.zip" | cut -d' ' -f1)
+[ "$bundle_hash" = "$(<"$FACTORY_APP_DIR/runner.sha256")" ] || fail "runner.zip hash mismatch"
 
 # ── Credential hygiene ───────────────────────────────────────────────────
 # No stored credentials or credential helpers may survive into the snapshot.
@@ -43,43 +44,12 @@ case "$url" in *@*) fail "remote URL carries credentials" ;; esac
 
 # ── Manifest and checkout ────────────────────────────────────────────────
 
-commit=$("$FACTORY_NODE" -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).sha)' "$FACTORY_APP_DIR/manifest.json") ||
+commit=$("$FACTORY_PYTHON" -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["sha"])' "$FACTORY_APP_DIR/manifest.json") ||
 	fail "cannot read manifest"
 head=$(g rev-parse HEAD 2>&1) || fail "$head"
 [ "$head" = "$commit" ] || fail "HEAD $head != manifest $commit"
 dirty=$(g status --porcelain --untracked-files=no 2>&1) || fail "git status failed: $dirty"
 [ -z "$dirty" ] || fail "tracked files modified in $FACTORY_REPO_DIR: $(printf '%s' "$dirty" | head -n 5 | tr '\n' ' ')"
-
-# ── Runner self-test ─────────────────────────────────────────────────────
-
-self_test=$(as_runner "$FACTORY_RUNNER_NODE" "$FACTORY_APP_DIR/runner/runner.mjs" --self-test) || fail "runner self-test failed"
-
-# ── Non-dumpable check ───────────────────────────────────────────────────
-# An execute-only runner node keeps its memory (the model key) from same-uid tool subprocesses via /proc.
-
-non_dumpable=false
-if [ "$(id -u)" = 0 ] && [ "$FACTORY_RUN_AS" != root ]; then
-	pidfile="$FACTORY_SCRATCH_DIR/.factory-dumpable-probe.pid"
-	rm -f "$pidfile"
-	as_runner "$FACTORY_RUNNER_NODE" -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, 60000)' "$pidfile" &
-	launcher=$!
-	for _ in $(seq 1 100); do
-		[ -s "$pidfile" ] && break
-		sleep 0.2
-	done
-	pid=$(cat "$pidfile" 2>/dev/null) || fail "$FACTORY_RUNNER_NODE did not start"
-	stop_probe() {
-		kill "$pid" 2>/dev/null || true
-		wait "$launcher" 2>/dev/null || true
-		rm -f "$pidfile"
-	}
-	if err=$(as_runner cat "/proc/$pid/maps" 2>&1 >/dev/null); then
-		stop_probe
-		fail "runner is dumpable: $FACTORY_RUN_AS can read /proc/$pid/maps of $FACTORY_RUNNER_NODE"
-	fi
-	stop_probe
-	case "$err" in *"Permission denied"*) non_dumpable=true ;; *) fail "dumpability probe inconclusive: $err" ;; esac
-fi
 
 # ── Permissions ──────────────────────────────────────────────────────────
 
@@ -100,11 +70,12 @@ fi
 
 find "$FACTORY_SCRATCH_DIR/tmp" -mindepth 1 -delete
 
-"$FACTORY_NODE" -e '
-const [runAs, uid, selfTest, nonDumpable] = process.argv.slice(1);
-console.log(JSON.stringify({
-  runAs, uid: Number(uid), node: process.version,
-  runnerNonDumpable: nonDumpable === "true",
-  selfTest: JSON.parse(selfTest.trim().split("\n").pop()),
-}));
-' "$FACTORY_RUN_AS" "$(id -u)" "$self_test" "$non_dumpable"
+"$FACTORY_PYTHON" -c '
+import json, os, platform
+print(json.dumps({
+    "runAs": os.environ["FACTORY_RUN_AS"],
+    "uid": os.getuid(),
+    "python": platform.python_version(),
+    "protocol": 3,
+}))
+'

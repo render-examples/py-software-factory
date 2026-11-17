@@ -3,16 +3,18 @@
 Status: draft for review. Written 2026-11-13. Read `spec.md` first; decision
 and open-item IDs (D1, O1) refer to it.
 
+Update 2026-11-13: Phases 1 and 2 are done. Phase 0 is dropped, and
+`implementation-plan.md` replaces Phases 3 to 8.
+
 ## Approach
 
-1. **Spikes first.** Seven open items could change the design. Resolve them
+1. **Spikes first.** Six open items could change the design. Resolve them
    in throwaway code before porting anything that depends on them.
 2. **Security-bearing code next, with its tests.** These modules do not
    depend on the agent design, so they can start in parallel with the spikes.
 3. **Agents, then stages, then deployment.** One working stage end to end
    before the others.
-4. **The flow last.** It reuses the stage functions and is the newest
-   platform surface.
+4. **Autopilot last.** It composes the finished stage tasks as children.
 
 Sizes below are lines in the TS repo, as a guide to relative effort. No
 durations are given: they depend on who does the work and how the spikes
@@ -30,11 +32,10 @@ exit question and a fallback if the answer is no.
 | S3 Python in the sandbox | O4 | Is Python 3.11+ present, and does a virtualenv survive snapshot and restore? | Install Python in `install-tools.sh`, or ship the runner as a single-file zipapp with vendored dependencies |
 | S4 Tools on the workspace API | O5 | Do the five tools and the shell policy work unchanged with a local workspace and with `RenderSandbox`? | Two thin tool backends behind one declared tool list: local in the sandbox, sandbox-exec from the task |
 | S5 In-task attach and pacing | O6 | Does `RenderSandbox` attach to a host-opened sandbox by ID, and can calls be paced and retried on 429? | Skip `RenderSandbox`; back the in-task tools with the factory's own paced sandbox client |
-| S6 Flow behavior | O7 | Does a flow with sync steps wrapping async code replay correctly after a killed instance, reattach to its sandbox, and cancel cleanly? | Autopilot stays a task parent calling child tasks, as in the original |
 | S7 Task basics | Confirms SDK reading | Do subtask calls, idempotency keys and run cancellation behave as the SDK source suggests? | None expected; adjust call sites |
 
-S1 and S6 create billable resources (a sandbox group, a credential, sandboxes,
-workflow runs). Run them in a dedicated workspace.
+S1 creates billable resources (a sandbox group, a credential and sandboxes).
+Run it in a dedicated workspace.
 
 **Exit:** each open item in the spec is marked resolved, with the fallback
 taken where needed, and the spec is updated.
@@ -46,7 +47,7 @@ taken where needed, and the spec is updated.
 - CI running `check`.
 - `factory_config.py` with a typed, validated config (repos, labels, command
   prefix, minimum permission, limits, sandbox timeout, egress hosts).
-- `factory/config.py` (repo resolution, task and flow names) and
+- `factory/config.py` (repo resolution and task names) and
   `factory/events.py` (one JSON-lines emit function, per D22).
 - Pinned versions from the spec's baseline table.
 
@@ -138,21 +139,16 @@ a run and terminates its sandbox.
 **Exit:** a fresh fork deploys by following the setup runbook only, and
 `doctor` passes.
 
-## Phase 7: Autopilot flow
+## Phase 7: Autopilot parent task
 
-- Autopilot as a flow over the stage functions, with steps for triage,
-  implement, verify, repair, publish and review.
-- Sandbox ID returned as a step result; later steps reattach.
-- Run control extended to read and cancel flow runs.
-- Gateway route for the autopilot label starts a flow run.
-- Tests: determinism (same step sequence on replay), claim survival across
-  replay, and the questions path ending the flow.
-
-If S6 failed, this phase ports the original task-parent Autopilot instead.
+- Autopilot as a parent task calling Triage, Spec-to-PR and PR Review child
+  tasks, as in the original.
+- Child results, not GitHub labels, advance the pipeline.
+- Tests: handoffs, stage order, stopping on each child outcome, claim
+  ownership, cancellation and the questions path.
 
 **Exit:** an Autopilot run on the example target reaches a reviewed draft
-pull request; killing the instance mid-run resumes without repeating a
-finished stage.
+pull request.
 
 ## Phase 8: webinar readiness
 
@@ -162,7 +158,7 @@ finished stage.
   with the difference visible in logs (exec count, where the key lives).
 - Dry run of fork-and-deploy on a clean account.
 - Record known limits in the README: no cross-run dollar budget, brokered
-  key can still be spent from a live sandbox, flows are new.
+  key can still be spent from a live sandbox.
 
 **Exit:** full dry run completed on the pinned versions.
 
@@ -177,7 +173,7 @@ Phase 2 ──┘ (parallel with Phase 0)        └──> Phase 7 ──> Phas
 - Phase 2 needs only Phase 1.
 - Phase 3 needs S1, S2 and S3.
 - Phase 4 needs S4 and S5.
-- Phase 7 needs S6 and Phase 5.
+- Phase 7 needs Phase 5.
 
 ## Review checkpoints
 
@@ -185,10 +181,8 @@ Phase 2 ──┘ (parallel with Phase 0)        └──> Phase 7 ──> Phas
   in light of the spike results. This is the cheapest point to change course.
 - **After Phase 5, step 1:** review Triage end to end before building the
   other stages on the same pattern.
-- **After Phase 7:** decide whether Autopilot ships as a flow or a task
-  parent for the webinar.
 
 ## Out of scope
 
-Postgres spend ledger, triage conversation carry-over, and a flows durability
-backend for Pydantic AI. See spec section 11.
+Postgres spend ledger, triage conversation carry-over, and Render Workflows
+flows. See spec section 11.

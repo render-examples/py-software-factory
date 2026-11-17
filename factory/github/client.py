@@ -99,14 +99,23 @@ class GitHubClient:
         return _comment(raw)
 
     async def ensure_label(self, name: str, color: str, description: str = "") -> None:
-        """Creates a repository label; an existing one (422) is left as it is."""
+        """Creates a repository label, confirming that a 422 really means it already exists."""
         try:
             await self.http.json(
                 "POST", f"{self._base}/labels", body={"name": name, "color": color, "description": description}
             )
         except GitHubError as error:
-            if error.status != 422:
+            if error.status != 422 or not await self._label_exists(name):
                 raise
+
+    async def _label_exists(self, name: str) -> bool:
+        try:
+            await self.http.json("GET", f"{self._base}/labels/{_segment(name)}")
+        except GitHubError as error:
+            if error.status == 404:
+                return False
+            raise
+        return True
 
     async def add_labels(self, number: int, labels: Sequence[str]) -> None:
         if not labels:
@@ -189,14 +198,15 @@ class GitHubClient:
         }
         return _review(await self.http.json("POST", f"{self._base}/pulls/{pr}/reviews", body=payload))
 
-    async def ensure_pull(
-        self, *, head: str, base: str, title: str, body: str, draft: bool = True
-    ) -> tuple[PullRequest, bool]:
-        """Makes an open PR from `head` exist with this title and body: updates the open one, or opens a new one.
-        Returns the PR and whether it was created. Safe to repeat: a replayed run finds the PR the first one
-        opened."""
+    async def ensure_pull(self, *, head: str, base: str, title: str, body: str) -> tuple[PullRequest, bool]:
+        """Makes a draft PR from `head` exist with this title and body.
+
+        A replay updates the draft it opened. Once a person marks that PR ready, automation leaves it alone.
+        Returns the PR and whether it was created.
+        """
         existing = await self._find_open_pull(head)
         if existing is not None:
+            _require_draft(existing)
             raw = await self.http.json(
                 "PATCH", f"{self._base}/pulls/{existing.number}", body={"title": title, "body": body}
             )
@@ -205,7 +215,7 @@ class GitHubClient:
             raw = await self.http.json(
                 "POST",
                 f"{self._base}/pulls",
-                body={"head": head, "base": base, "title": title, "body": body, "draft": draft},
+                body={"head": head, "base": base, "title": title, "body": body, "draft": True},
             )
             return _pull(raw), True
         except GitHubError as error:
@@ -213,6 +223,7 @@ class GitHubClient:
             if error.status == 422:
                 raced = await self._find_open_pull(head)
                 if raced is not None:
+                    _require_draft(raced)
                     return raced, False
             raise
 
@@ -297,6 +308,7 @@ def _pull(raw: Any) -> PullRequest:
         number=raw["number"],
         state=raw["state"],
         merged=bool(raw.get("merged", False)),
+        draft=bool(raw.get("draft", False)),
         title=raw["title"],
         body=raw.get("body") or "",
         head_sha=raw["head"]["sha"],
@@ -304,6 +316,12 @@ def _pull(raw: Any) -> PullRequest:
         base_ref=raw["base"]["ref"],
         html_url=raw["html_url"],
     )
+
+
+def _require_draft(pull: PullRequest) -> None:
+    """Automation may update its draft, but never takes over a PR a person marked ready."""
+    if not pull.draft:
+        raise RuntimeError(f"Refusing to update PR #{pull.number}: it is no longer a draft")
 
 
 def _review(raw: Any) -> PullRequestReview:

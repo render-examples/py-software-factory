@@ -50,6 +50,26 @@ def test_rejects_unknown_keys_so_a_typo_fails_at_startup() -> None:
         RepoConfig.model_validate({"base_branch": "main", "verify": (), "verfy": ()})
 
 
+@pytest.mark.parametrize("branch", ["-option", "../main", "feature//one", ".hidden", "main.lock", "bad branch"])
+def test_rejects_an_unsafe_base_branch_at_startup(branch: str) -> None:
+    raw = TEST_CONFIG.model_dump()
+    raw["repos"] = {"acme/web": {"base_branch": branch, "verify": ()}}
+    with pytest.raises(ValidationError, match="safe Git branch"):
+        FactoryConfig.model_validate(raw)
+
+
+def test_rejects_ambiguous_labels_and_multiline_command_prefixes() -> None:
+    raw = TEST_CONFIG.model_dump()
+    raw["labels"]["autopilot"] = raw["labels"]["triage"]
+    with pytest.raises(ValidationError, match="labels must be distinct"):
+        FactoryConfig.model_validate(raw)
+
+    raw = TEST_CONFIG.model_dump()
+    raw["command_prefix"] = "/factory\nignore"
+    with pytest.raises(ValidationError, match="single line"):
+        FactoryConfig.model_validate(raw)
+
+
 def test_resolves_only_configured_repositories() -> None:
     repo = resolve_repo(REPO, 7)
     assert repo is not None

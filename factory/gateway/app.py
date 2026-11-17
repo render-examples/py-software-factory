@@ -21,7 +21,7 @@ from factory.gateway.routes import Ignore, Invalid, route
 from factory.gateway.signature import verify_signature
 
 StartRun = Callable[[RunName, dict[str, Any], str], Awaitable[str]]
-"""Starts a task or flow run with an idempotency key, and returns its run ID."""
+"""Starts a task run with an idempotency key, and returns its run ID."""
 
 _ROOT_TEXT = (
     "software-factory gateway is running.\n\n"

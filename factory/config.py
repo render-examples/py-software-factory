@@ -57,9 +57,8 @@ def require_env(name: str) -> str:
     return value
 
 
-TaskName = Literal["triage", "spec-to-pr", "pr-review", "cancel", "refresh-snapshot"]
-FlowName = Literal["autopilot"]
-RunName = TaskName | FlowName
+TaskName = Literal["triage", "spec-to-pr", "pr-review", "autopilot", "cancel", "refresh-snapshot"]
+RunName = TaskName
 
 
 class Tasks:
@@ -68,12 +67,6 @@ class Tasks:
     TRIAGE: Final = "triage"
     SPEC_TO_PR: Final = "spec-to-pr"
     PR_REVIEW: Final = "pr-review"
+    AUTOPILOT: Final = "autopilot"
     CANCEL: Final = "cancel"
     REFRESH_SNAPSHOT: Final = "refresh-snapshot"
-
-
-class Flows:
-    AUTOPILOT: Final = "autopilot"
-
-
-FLOW_NAMES: Final[frozenset[str]] = frozenset({Flows.AUTOPILOT})

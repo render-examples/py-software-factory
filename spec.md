@@ -10,7 +10,7 @@ adapted to use Pydantic AI as the agent loop. It is the starting point for a
 webinar on building a software factory on Render.
 
 The port keeps the original's security model and GitHub-native workflow. It
-changes four things:
+changes three things:
 
 1. The agent loop is Pydantic AI, called directly. The generic harness adapter
    layer is dropped.
@@ -18,8 +18,6 @@ changes four things:
    Workflows task with tools executing in the sandbox.
 3. The model key is brokered by Render sandbox group credentials and never
    enters a sandbox.
-4. Autopilot is a Render Workflows flow, so a lost instance replays without
-   repeating finished stages.
 
 ### Baseline versions
 
@@ -29,7 +27,6 @@ These are the versions this spec was written against. Pin them.
 |---|---|---|
 | software-factory (TS) | commit `fd3731d`, 2026-11-06 | Source of the port |
 | pydantic-ai | 2.68.0 (2026-11-12) | Requires Python 3.11+; ships several times a week |
-| pydantic-ai-harness | 0.x | API may change between minor releases |
 | render (Python SDK) | 1.8.0 | Sandbox client is under `render.experimental` |
 
 ## 2. Goals and non-goals
@@ -51,6 +48,8 @@ These are the versions this spec was written against. Pin them.
   the multi-harness reference.
 - Postgres, a cross-run spend ledger, or per-model-request durability
   (section 11).
+- Render Workflows flows. Every factory run is a task; Autopilot composes
+  child tasks as in the original.
 
 ## 3. Decision log
 
@@ -68,7 +67,7 @@ default unless changed in review.
 | D6 | Port all setup scripts, including `doctor` | Decided |
 | D7 | Gateway uses FastAPI | Decided |
 | D8 | Model key sits behind credential brokering | Decided |
-| D9 | Tasks for single stages; Autopilot as a flow, added last | Decided (recommendation accepted) |
+| D9 | Every run is a task; Autopilot is a parent task that calls stage tasks | Decided |
 | D10 | Do not use the Pydantic AI `RenderWorkflows` integration on the main path | Proposed |
 | D11 | Replace the kernel and `submit` tool with Pydantic AI `output_type`, request limits and run timeout | Proposed |
 | D12 | Keep a host-to-sandbox wire protocol as the trust boundary | Proposed |
@@ -94,18 +93,18 @@ library features (D11).
 architecture doc argues against one for claims, because the GitHub status
 comment already owns them. Leaving it out costs three things the original
 also lacks: a cross-run dollar budget, resume after a crash, and conversation
-carry-over in triage. D9 covers resume for Autopilot.
+carry-over in triage.
 
 **D8, credential brokering.** The original uploads the model key into the
 sandbox and protects it with a root-only file, a key-on-stdin handoff, env
 scrubbing and an execute-only interpreter. Brokering removes all of that and
 the "model key exists in runner memory" residual risk.
 
-**D9, tasks and one flow.** Flows journal steps and replay after an
-infrastructure failure. A single stage is one agent run, so replay buys
-little there. Autopilot is the longest and most expensive run, so that is
-where it pays. Flows cannot call tasks, so the flow runs stages inline and
-gives up per-stage compute.
+**D9, tasks only.** Tasks are the factory's reusable unit of work. Autopilot
+calls Triage, Spec-to-PR and PR Review as child tasks, preserving one async
+programming model, per-stage compute and timeouts, and direct reuse of the
+same tasks labels start. Flows cannot call tasks, require synchronous steps
+and duplicate orchestration, so they are outside this repository's scope.
 
 **D10, skip the `RenderWorkflows` integration.** It chains each model request
 and tool call as a task but does not checkpoint, and the factory disables
@@ -117,7 +116,7 @@ check.
 
 ```text
 GitHub --signed webhook--> Gateway (FastAPI)
-Gateway --start task / flow, delivery ID as idempotency key--> Workflows (Python)
+Gateway --start task, delivery ID as idempotency key--> Workflows (Python)
 Workflows --restore snapshot, exec--> Sandbox
 Sandbox --typed result or candidate tree--> Workflows
 Workflows --validated write--> GitHub
@@ -125,9 +124,9 @@ Workflows --validated write--> GitHub
 
 The Blueprint deploys two services, as in the original:
 
-- **Gateway.** Verifies webhook signatures, maps each delivery to one task or
-  flow run. Holds no GitHub credential and no model key.
-- **Workflows.** Registers tasks and the Autopilot flow, manages sandboxes,
+- **Gateway.** Verifies webhook signatures and maps each delivery to one task
+  run. Holds no GitHub credential and no model key.
+- **Workflows.** Registers tasks, manages sandboxes,
   performs every GitHub write. Holds the GitHub App credentials, the Render
   API key and the model key (for in-task agents only).
 
@@ -150,8 +149,8 @@ py-software-factory/
     sandbox/      paced client, open/restore, snapshot, egress, credentials
     agents/       definitions, prompts, tools, shell policy, models
     runner/       in-sandbox entry point and wire protocol
-    stages/       plain stage functions shared by tasks and the flow
-    workflows/    task and flow registration, cancel, snapshot refresh
+    stages/       plain stage functions called by tasks
+    workflows/    task registration, Autopilot, cancel, snapshot refresh
     schemas/      Pydantic models for outputs and task inputs
     config.py  events.py
   sandbox/        shell scripts (ported from the original)
@@ -192,7 +191,8 @@ as the original does with Zod.
 
 The factory defines `read`, `ls`, `bash`, `edit` and `write` once, against
 Pydantic AI's workspace API (`ctx.workspace`). The same definitions run with
-a local workspace inside the sandbox and with `RenderSandbox` from a task.
+a local workspace inside the sandbox and with the factory's paced sandbox
+workspace backend from a task.
 The Harness's own `Shell`, `FileSystem` and `Coder` capabilities are not
 offered to models.
 
@@ -226,9 +226,9 @@ local.
 
 The Workflows task opens the sandbox as the original does (restore, fetch,
 scrub credentials), then runs the agent loop in the task process. Tools
-execute in that sandbox through `RenderSandbox` attached by sandbox ID.
+execute in that sandbox through a thin workspace backend over the factory's
+paced sandbox client.
 
-- Package: `pydantic-ai-harness`, for `RenderSandbox` only.
 - Model access: the key is in the Workflows service environment and never
   enters the sandbox.
 - Egress: the model API host is not on the sandbox's allow-list.
@@ -279,10 +279,10 @@ and the turn limits still matter.
 - Key scrubbing from tool environments.
 - The execute-only interpreter and the non-dumpable probe in `verify.sh`.
 
-## 8. Tasks and flows (D9)
+## 8. Tasks (D9)
 
-Stage logic lives in plain functions under `factory/stages/`. Tasks and the
-flow both call them.
+Stage logic lives in plain functions under `factory/stages/`. Label-triggered
+tasks call the stages directly; Autopilot calls those same tasks as children.
 
 | Run | Kind | Notes |
 |---|---|---|
@@ -291,24 +291,12 @@ flow both call them.
 | PR Review | Task | Label-triggered single stage |
 | Cancel | Task | Stops the claimed run and terminates its sandbox |
 | Refresh snapshot | Task | Runs on base-branch push |
-| Autopilot | Flow | Steps: triage, implement, verify, repair, publish, review |
+| Autopilot | Parent task | Calls Triage, Spec-to-PR and PR Review as child tasks |
 
-Rules for the flow, from the flows docs and SDK:
-
-- Flow code must be deterministic. All I/O, including claim checks and GitHub
-  reads, goes inside steps.
-- Step functions are sync and receive only JSON arguments. Each step rebuilds
-  its sandbox handle and GitHub client from IDs, and wraps async code.
-- The sandbox ID is a step result, so a replay reattaches to the same sandbox.
-- An interrupted step reruns in full. Publishing is already safe to repeat
-  (deterministic branch, hidden markers, tree SHA check); an interrupted
-  agent step repeats that step's spend.
-- Replay covers infrastructure failures only. Out-of-memory, timeouts and
-  uncaught errors fail the run.
-- There is no wait primitive. When Triage asks questions, the flow ends and a
-  human reply starts a new run, as today.
-- Replays keep the flow run ID, so the claim in the status comment survives.
-  Run control must read and cancel both task runs and flow runs.
+The parent task owns the issue-level claim. Child tasks continue that root
+claim and return typed handoffs that advance the pipeline. Each stage keeps
+its own compute and timeout. When Triage asks questions, Autopilot restores
+its label and ends; a human reply starts a new parent task.
 
 Task retries stay disabled for GitHub tasks, as in the original.
 
@@ -318,7 +306,7 @@ Carried over from the original. Tests must pin them.
 
 1. Verify a webhook signature before parsing its body.
 2. Check the triggering actor's current repository permission for every
-   GitHub task or flow run.
+   GitHub task run.
 3. Only code in the Workflows service writes to GitHub.
 4. GitHub write credentials never enter a sandbox.
 5. Every model-directed tool runs inside a sandbox. This holds for both
@@ -346,10 +334,10 @@ Sizes are lines in the TS repo.
 |---|---|---|---|
 | Gateway | 259 | Faithful | FastAPI; raw body read before parsing |
 | GitHub client | 1,007 | Faithful | App auth, tokens, retries, Git Data API, markers |
-| Claims | 548 | Faithful | Extended to cover flow runs |
+| Claims | 548 | Faithful | Status-comment ownership across parent and child tasks |
 | Changeset publishing | 407 | Faithful | Byte-level parsing and validation |
 | Formatting | 376 | Faithful | Marker neutralizing, mention escaping |
-| Workflows | 1,253 | Faithful logic | Restructured into stage functions, tasks, one flow |
+| Workflows | 1,253 | Faithful logic | Stage functions and tasks, including the Autopilot parent task |
 | Sandbox lifecycle | 954 | Adapted | Python SDK; sandbox group; Node-specific parts replaced |
 | Sandbox shell scripts | 434 | Mostly kept | Changes in `install-tools.sh`, `run-agent.sh`, `verify.sh` |
 | Schemas | 240 | Adapted | Strict, bounded Pydantic models |
@@ -371,9 +359,6 @@ scripts).
   run. D22 keeps the emit point ready for it.
 - **Triage conversation carry-over.** Continue a saved conversation when a
   human replies, using the optional storage argument from D22.
-- **Flows durability backend for Pydantic AI.** Journal each model request
-  and tool call as a flow step. This would address the checkpointing gap in
-  the current `RenderWorkflows` integration.
 
 ## 12. Open items
 
@@ -387,20 +372,16 @@ fallback there.
 | O3 | Does setup need an admin API key for credential creation while runtime uses a narrower one? | Setup scripts |
 | O4 | Is the sandbox image's Python 3.11 or later, and can a virtualenv be baked into a snapshot and restored intact? | D15 |
 | O5 | Can the shell policy and write restrictions be enforced through the workspace API in both placements? | D13, D14 |
-| O6 | Does `RenderSandbox` attach cleanly to a host-opened sandbox, and can its calls be paced under the 100 requests/minute limit? | In-task placement |
-| O7 | Do flows behave as documented for this use: sync steps wrapping async code, cancel, replay with sandbox reattach? | D9 |
-
+| O6 | Resolved: use a thin workspace backend over the factory's paced client, so every in-task tool call shares the same request budget and retry policy. | In-task placement |
 Confirmed from SDK source, not from a running system: the Python SDK has
-snapshots, egress policies, subtask calls, idempotency keys on task and flow
-starts, and task and flow run cancellation.
+snapshots, egress policies, subtask calls, idempotency keys on task starts,
+and task run cancellation.
 
 ## 13. Risks
 
 - **Release pace.** Pydantic AI ships several times a week and the Harness is
   0.x. Pin both and re-test shortly before the webinar.
-- **New platform features.** Flows are marked "New" and have "not supported
-  yet" paths (invoking tasks, sleep, async steps). The sandbox client is
-  under `experimental`.
+- **New platform features.** The sandbox client is under `experimental`.
 - **Faithful ports of security code.** Most of the repo is plumbing where the
   invariants live. A loose port can lose one silently, so those modules are
   ported with their tests first.
@@ -412,7 +393,4 @@ starts, and task and flow run cancellation.
 - [render-examples/software-factory](https://github.com/render-examples/software-factory)
 - [Pydantic AI: Agent](https://pydantic.dev/docs/ai/core-concepts/agent/index.md)
 - [Pydantic AI: Render Sandbox](https://pydantic.dev/docs/ai/harness/render-sandbox/index.md)
-- [Pydantic AI: Render Workflows](https://pydantic.dev/docs/ai/harness/render-workflows/)
-- [Pydantic AI: Durable Execution overview](https://pydantic.dev/docs/ai/capabilities/durable_execution/overview/index.md)
-- [Render docs: Defining Flows](https://render.com/docs/workflows-defining-flows)
 - `render` Python SDK 1.8.0, read from the published wheel

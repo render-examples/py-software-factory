@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from factory.config import Flows, RunName, Tasks, get_config, resolve_repo
+from factory.config import RunName, Tasks, get_config, resolve_repo
 from factory.schemas import (
     AutopilotInput,
     CancelInput,
@@ -189,7 +189,7 @@ def route(event: str, payload: Any, delivery_id: str) -> Route:
                 Tasks.SPEC_TO_PR, SpecToPrInput, {"issue": issue.number, "actor": actor, "approval": approval}, subject
             )
         if label == config.labels.autopilot:
-            return start(Flows.AUTOPILOT, AutopilotInput, {"issue": issue.number, "actor": actor}, subject)
+            return start(Tasks.AUTOPILOT, AutopilotInput, {"issue": issue.number, "actor": actor}, subject)
         return Ignore("unhandled label")
 
     if event == "pull_request":
@@ -225,7 +225,7 @@ def route(event: str, payload: Any, delivery_id: str) -> Route:
         labels = {label.name for label in issue.labels}
         fields = {"issue": issue.number, "actor": actor, "comment_id": comment.id}
         if config.labels.autopilot in labels:
-            return start(Flows.AUTOPILOT, AutopilotInput, fields, subject)
+            return start(Tasks.AUTOPILOT, AutopilotInput, fields, subject)
         if config.labels.triage not in labels:
             return Ignore("issue not in triage")
         return start(Tasks.TRIAGE, TriageInput, fields, subject)
@@ -243,7 +243,7 @@ def route(event: str, payload: Any, delivery_id: str) -> Route:
         return start(
             Tasks.REFRESH_SNAPSHOT,
             RefreshSnapshotInput,
-            {"sha": push.after},
+            {"sha": push.after, "actor": actor},
             idempotency_key=f"{repo.full_name}@{push.after}",
         )
 

@@ -28,7 +28,6 @@ from factory.github import (
     GitHubClient,
     IssueComment,
     Permission,
-    RunKind,
     StatusMarker,
     parse_marker,
     render_marker,
@@ -93,13 +92,11 @@ class FakeGitHub:
         sandbox_id: str | None = None,
         trace_id: str | None = None,
         root_stage: str | None = None,
-        root_kind: RunKind | None = None,
     ) -> IssueComment:
         marker = StatusMarker(
             run_id=run_id,
             trace_id=trace_id,
             root_stage=root_stage,
-            root_kind=root_kind,
             stage="triage",
             state=state,  # pyright: ignore[reportArgumentType]
             sandbox_id=sandbox_id,
@@ -114,21 +111,21 @@ class FakeGitHub:
 
 
 class FakeRuns:
-    def __init__(self, statuses: dict[tuple[str, RunKind], str] | None = None) -> None:
+    def __init__(self, statuses: dict[str, str] | None = None) -> None:
         self.statuses = statuses or {}
-        self.reads: list[tuple[str, RunKind]] = []
-        self.cancelled: list[tuple[str, RunKind]] = []
+        self.reads: list[str] = []
+        self.cancelled: list[str] = []
         self.terminated: list[str] = []
 
-    async def get_status(self, run_id: str, kind: RunKind) -> str:
-        self.reads.append((run_id, kind))
-        if (run_id, kind) not in self.statuses:
+    async def get_status(self, run_id: str) -> str:
+        self.reads.append(run_id)
+        if run_id not in self.statuses:
             raise RunNotFoundError(run_id)
-        return self.statuses[(run_id, kind)]
+        return self.statuses[run_id]
 
-    async def cancel(self, run_id: str, kind: RunKind) -> None:
-        self.cancelled.append((run_id, kind))
-        self.statuses[(run_id, kind)] = "canceled"
+    async def cancel(self, run_id: str) -> None:
+        self.cancelled.append(run_id)
+        self.statuses[run_id] = "canceled"
 
     async def terminate_sandbox(self, sandbox_id: str) -> None:
         self.terminated.append(sandbox_id)
@@ -138,17 +135,16 @@ def events(capsys: pytest.CaptureFixture[str]) -> list[dict[str, Any]]:
     return [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
 
 
-def identity(run_id: str, trace_id: str | None = None, kind: RunKind = "task") -> RunIdentity:
-    return RunIdentity(trace_id=trace_id or run_id, run_id=run_id, root_kind=kind)
+def identity(run_id: str, trace_id: str | None = None) -> RunIdentity:
+    return RunIdentity(trace_id=trace_id or run_id, run_id=run_id)
 
 
 class TestTakeOver:
-    async def test_cancels_an_active_previous_run_terminates_its_sandbox_and_reuses_the_comment(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    @pytest.mark.parametrize("render_status", ["pending", "running", "paused"])
+    async def test_cancels_every_active_render_task_status(self, render_status: str) -> None:
         gh = FakeGitHub()
-        existing = gh.add_status("trn-old", "running", "sbx-old")
-        runs = FakeRuns({("trn-old", "task"): "running"})
+        gh.add_status("trn-old", "running")
+        runs = FakeRuns({"trn-old": render_status})
         result = await take_over(
             gh=gh,
             repo=REPO.full_name,
@@ -158,7 +154,25 @@ class TestTakeOver:
             identity=identity("trn-new"),
             runs=runs,
         )
-        assert runs.cancelled == [("trn-old", "task")]
+        assert result.cancelled_previous
+        assert runs.cancelled == ["trn-old"]
+
+    async def test_cancels_an_active_previous_run_terminates_its_sandbox_and_reuses_the_comment(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        gh = FakeGitHub()
+        existing = gh.add_status("trn-old", "running", "sbx-old")
+        runs = FakeRuns({"trn-old": "running"})
+        result = await take_over(
+            gh=gh,
+            repo=REPO.full_name,
+            subject=SUBJECT,
+            task="triage",
+            title="Triage",
+            identity=identity("trn-new"),
+            runs=runs,
+        )
+        assert runs.cancelled == ["trn-old"]
         assert runs.terminated == ["sbx-old"]
         # The stopped run is killed before it can record how it ended, so the takeover records it.
         assert {
@@ -191,7 +205,7 @@ class TestTakeOver:
     ) -> None:
         gh = FakeGitHub()
         gh.add_status("trn-child-old", "running", "sbx-old", "trn-root-old")
-        runs = FakeRuns({("trn-root-old", "task"): "running"})
+        runs = FakeRuns({"trn-root-old": "running"})
         await take_over(
             gh=gh,
             repo=REPO.full_name,
@@ -201,52 +215,16 @@ class TestTakeOver:
             identity=identity("trn-child-new", "trn-root-new"),
             runs=runs,
         )
-        assert runs.cancelled == [("trn-root-old", "task")]
+        assert runs.cancelled == ["trn-root-old"]
         assert any(
             e["trace_id"] == "trn-root-old" and e["run_id"] == "trn-child-old" and e["outcome"] == "superseded"
             for e in events(capsys)
         )
 
-    async def test_cancels_a_previous_flow_run_through_the_flow_api(self) -> None:
-        gh = FakeGitHub()
-        gh.add_status("frn-old", "running", "sbx-old", "frn-old", "autopilot", root_kind="flow")
-        runs = FakeRuns({("frn-old", "flow"): "paused"})
-        await take_over(
-            gh=gh,
-            repo=REPO.full_name,
-            subject=SUBJECT,
-            task="triage",
-            title="Triage",
-            identity=identity("trn-new"),
-            runs=runs,
-        )
-        assert runs.cancelled == [("frn-old", "flow")]
-        assert runs.terminated == ["sbx-old"]
-
-    async def test_a_flow_replay_keeps_its_claim_without_cancelling_itself(self) -> None:
-        gh = FakeGitHub()
-        gh.add_status("frn-1", "running", "sbx-1", "frn-1", "autopilot", root_kind="flow")
-        runs = FakeRuns({("frn-1", "flow"): "running"})
-        result = await take_over(
-            gh=gh,
-            repo=REPO.full_name,
-            subject=SUBJECT,
-            task="autopilot",
-            title="Autopilot",
-            identity=identity("frn-1", kind="flow"),
-            runs=runs,
-        )
-        assert result.acquired
-        assert runs.reads == []
-        assert runs.cancelled == []
-        status = gh.status()
-        assert status is not None
-        assert (status.run_id, status.root_kind) == ("frn-1", "flow")
-
     async def test_moves_to_another_child_of_the_same_root_without_cancelling_the_parent(self) -> None:
         gh = FakeGitHub()
         gh.add_status("trn-triage", "done", None, "trn-root", "autopilot")
-        runs = FakeRuns({("trn-root", "task"): "running"})
+        runs = FakeRuns({"trn-root": "running"})
         await take_over(
             gh=gh,
             repo=REPO.full_name,
@@ -270,7 +248,7 @@ class TestTakeOver:
     async def test_refuses_a_late_child_instead_of_taking_over_from_a_newer_root(self) -> None:
         gh = FakeGitHub()
         existing = gh.add_status("trn-new-child", "running", None, "trn-new-root")
-        runs = FakeRuns({("trn-new-root", "task"): "running"})
+        runs = FakeRuns({"trn-new-root": "running"})
         result = await take_over(
             gh=gh,
             repo=REPO.full_name,
@@ -294,7 +272,7 @@ class TestTakeOver:
 
     async def test_fails_closed_when_the_previous_runs_state_is_unknown(self) -> None:
         class BrokenRuns(FakeRuns):
-            async def get_status(self, run_id: str, kind: RunKind) -> str:
+            async def get_status(self, run_id: str) -> str:
                 raise RuntimeError("render down")
 
         gh = FakeGitHub()
@@ -394,7 +372,7 @@ class TestWithClaim:
         gh = FakeGitHub()
         gh.permissions = {"maintainer": "maintain"}
         gh.add_status("trn-prev")
-        runs = FakeRuns({("trn-prev", "task"): "running"})
+        runs = FakeRuns({"trn-prev": "running"})
 
         async def work(claim: Claim) -> Outcome[None]:
             assert claim.run_id == "trn-run"
@@ -411,7 +389,7 @@ class TestWithClaim:
             return Outcome("asked-questions", "asked 2 questions")
 
         result = await with_claim(self.ID, self.opts(gh, "maintainer", runs), work)
-        assert runs.cancelled == [("trn-prev", "task")]
+        assert runs.cancelled == ["trn-prev"]
         status = gh.status()
         assert status is not None
         assert status.sandbox_id is None

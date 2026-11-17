@@ -1,4 +1,75 @@
+from factory.sandbox.client import (
+    ApiPacer,
+    DetachedExecution,
+    PacedSandboxClient,
+    RenderSandbox,
+    SandboxApi,
+    SandboxTimings,
+    sandbox_client,
+)
+from factory.sandbox.egress import builder_egress, egress_hint, task_egress
+from factory.sandbox.open import OpenedRenderSandbox, OpenSandboxDeps, open_sandbox, with_sandbox
 from factory.sandbox.shell import SAFE_REF, shq
-from factory.sandbox.types import APP_DIR, REPO_DIR, RUN_AS, SANDBOX_ROOT, SCRATCH_DIR, ExecResult, Sandbox
+from factory.sandbox.snapshot import (
+    BuiltSnapshot,
+    RunnerBundle,
+    SnapshotDeps,
+    as_runner,
+    build_runner_bundle,
+    build_snapshot,
+    ensure_runner_bundle,
+    snapshot_name,
+)
+from factory.sandbox.types import (
+    APP_DIR,
+    REPO_DIR,
+    RUN_AS,
+    SANDBOX_ROOT,
+    SCRATCH_DIR,
+    BranchRef,
+    ExecResult,
+    OpenedSandbox,
+    PullRef,
+    Sandbox,
+    SandboxRef,
+    SnapshotManifest,
+)
 
-__all__ = ["APP_DIR", "REPO_DIR", "RUN_AS", "SAFE_REF", "SANDBOX_ROOT", "SCRATCH_DIR", "ExecResult", "Sandbox", "shq"]
+__all__ = [
+    "APP_DIR",
+    "REPO_DIR",
+    "RUN_AS",
+    "SAFE_REF",
+    "SANDBOX_ROOT",
+    "SCRATCH_DIR",
+    "ApiPacer",
+    "BranchRef",
+    "BuiltSnapshot",
+    "DetachedExecution",
+    "ExecResult",
+    "OpenSandboxDeps",
+    "OpenedRenderSandbox",
+    "OpenedSandbox",
+    "PacedSandboxClient",
+    "PullRef",
+    "RenderSandbox",
+    "RunnerBundle",
+    "Sandbox",
+    "SandboxApi",
+    "SandboxRef",
+    "SandboxTimings",
+    "SnapshotDeps",
+    "SnapshotManifest",
+    "as_runner",
+    "build_runner_bundle",
+    "build_snapshot",
+    "builder_egress",
+    "egress_hint",
+    "ensure_runner_bundle",
+    "open_sandbox",
+    "sandbox_client",
+    "shq",
+    "snapshot_name",
+    "task_egress",
+    "with_sandbox",
+]

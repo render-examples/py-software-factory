@@ -56,8 +56,13 @@ def render_review(
     if verification is not None:
         sections.append(f"### Verification\n\n{verification_table(verification)}")
     if overflow:
-        items = "\n".join(
-            f"- **{_label(c.severity)}** {code_span(f'{c.file}:{c.line}')}: {sanitize_inline(c.title)}"
+        items = "\n\n".join(
+            "\n".join(
+                [
+                    f"- **{_label(c.severity)}** {code_span(f'{c.file}:{c.line}')}: {sanitize_inline(c.title)}",
+                    f"  {sanitize(c.body)}",
+                ]
+            )
             for c in overflow
         )
         sections.append(f"### More findings\n\nThese couldn't be placed as inline comments.\n\n{items}")

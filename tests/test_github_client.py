@@ -132,6 +132,15 @@ RAW_PULL = {
 
 
 class TestGitHubClient:
+    async def test_ensure_label_confirms_that_a_validation_error_means_the_label_exists(self) -> None:
+        existing = FakeGitHub(httpx.Response(422, text="already exists"), httpx.Response(200, json={"name": "x"}))
+        await client(existing).ensure_label("x", "ffffff")
+        assert [request.method for request in existing.requests] == ["POST", "GET"]
+
+        invalid = FakeGitHub(httpx.Response(422, text="invalid"), httpx.Response(404))
+        with pytest.raises(GitHubError):
+            await client(invalid).ensure_label("bad", "ffffff")
+
     async def test_ensure_pull_opens_a_draft_and_recovers_from_losing_a_race(self) -> None:
         fresh = FakeGitHub(httpx.Response(200, json=[]), httpx.Response(201, json=RAW_PULL))
         _, created = await client(fresh).ensure_pull(head="h", base="main", title="t", body="b")
@@ -147,6 +156,13 @@ class TestGitHubClient:
         pull, created = await client(raced).ensure_pull(head="h", base="main", title="t", body="b")
         assert not created
         assert pull.number == 9
+
+    async def test_ensure_pull_never_updates_a_pr_that_a_person_marked_ready(self) -> None:
+        ready = {**RAW_PULL, "draft": False}
+        fake = FakeGitHub(httpx.Response(200, json=[ready]))
+        with pytest.raises(RuntimeError, match="no longer a draft"):
+            await client(fake).ensure_pull(head="h", base="main", title="t", body="b")
+        assert len(fake.requests) == 1
 
     async def test_posts_only_comment_reviews(self) -> None:
         review = {"id": 1, "body": "b", "user": None, "commit_id": "c" * 40, "state": "COMMENTED", "html_url": ""}

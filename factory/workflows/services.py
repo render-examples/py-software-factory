@@ -1,0 +1,135 @@
+"""Dependency composition for tasks.
+
+Tests install fakes. Production integration supplies the agent/sandbox adapters without making their evolving
+modules import-time requirements of the orchestration layer.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
+
+from factory.claims import Claim
+from factory.config import RepoContext
+from factory.stages import PrReviewDeps, SpecToPrDeps, TriageDeps
+from factory.stages.refresh_snapshot import Snapshot
+
+
+@dataclass(frozen=True)
+class WorkflowServices:
+    triage: Callable[[Claim], TriageDeps]
+    spec_to_pr: Callable[[Claim], SpecToPrDeps]
+    pr_review: Callable[[Claim], PrReviewDeps]
+    build_snapshot: Callable[[RepoContext, str], Awaitable[Snapshot]]
+
+
+_services: WorkflowServices | None = None
+
+
+def configure_services(services: WorkflowServices | None) -> None:
+    """Install adapters at service startup, or fake adapters in tests."""
+    global _services
+    _services = services
+
+
+def get_services() -> WorkflowServices:
+    if _services is None:
+        return _production_services()
+    return _services
+
+
+def _production_services() -> WorkflowServices:
+    """Import evolving agent/sandbox APIs only when a task actually starts."""
+    from typing import cast
+
+    from factory.agents import run_agent
+    from factory.agents.providers import provider_for_model
+    from factory.agents.registry import IMPLEMENTER, PR_REVIEWER, SPEC_WRITER, TRIAGE
+    from factory.changeset import publish
+    from factory.github import git_data
+    from factory.sandbox import BranchRef, PullRef, build_snapshot, open_sandbox, sandbox_client
+    from factory.schemas import Implementation, Review, SpecDraft, TriageDecision
+
+    def model_host(model: str) -> tuple[str, ...]:
+        return (provider_for_model(model).api_host,)
+
+    def triage(claim: Claim) -> TriageDeps:
+        async def open_for_branch(repo: RepoContext, branch: str):  # type: ignore[no-untyped-def]
+            return await open_sandbox(repo, BranchRef(branch))
+
+        async def run_triage(message: str, sandbox: object) -> TriageDecision:
+            output = await run_agent(
+                TRIAGE,
+                message,
+                trace_id=claim.trace_id,
+                sandbox=cast(Any, sandbox),
+            )
+            return cast(TriageDecision, output)
+
+        async def run_writer(message: str, sandbox: object) -> SpecDraft:
+            output = await run_agent(
+                SPEC_WRITER,
+                message,
+                trace_id=claim.trace_id,
+                sandbox=cast(Any, sandbox),
+            )
+            return cast(SpecDraft, output)
+
+        return TriageDeps(open_for_branch, run_triage, run_writer)  # type: ignore[arg-type]
+
+    def spec_to_pr(claim: Claim) -> SpecToPrDeps:
+        git = git_data(claim.repo)
+
+        async def open_for_branch(repo: RepoContext, branch: str):  # type: ignore[no-untyped-def]
+            return await open_sandbox(
+                repo,
+                BranchRef(branch),
+                model_egress=model_host(IMPLEMENTER.model),
+            )
+
+        async def implement(message: str, sandbox: object) -> Implementation:
+            output = await run_agent(
+                IMPLEMENTER,
+                message,
+                trace_id=claim.trace_id,
+                sandbox=cast(Any, sandbox),
+                timeout_seconds=60 * 60,
+            )
+            return cast(Implementation, output)
+
+        return SpecToPrDeps(
+            open_for_branch,
+            implement,
+            publish,
+            git,
+            close_git=True,
+        )  # type: ignore[arg-type]
+
+    def pr_review(claim: Claim) -> PrReviewDeps:
+        async def open_for_pull(repo: RepoContext, pull: object):  # type: ignore[no-untyped-def]
+            return await open_sandbox(
+                repo,
+                PullRef(
+                    cast(Any, pull).number,
+                    cast(Any, pull).head_sha,
+                    cast(Any, pull).base_ref,
+                ),
+                model_egress=model_host(PR_REVIEWER.model),
+            )
+
+        async def review(message: str, sandbox: object) -> Review:
+            output = await run_agent(
+                PR_REVIEWER,
+                message,
+                trace_id=claim.trace_id,
+                sandbox=cast(Any, sandbox),
+            )
+            return cast(Review, output)
+
+        return PrReviewDeps(open_for_pull, review)  # type: ignore[arg-type]
+
+    async def refresh(repo: RepoContext, sha: str):  # type: ignore[no-untyped-def]
+        return await build_snapshot(sandbox_client(), repo, sha)
+
+    return WorkflowServices(triage, spec_to_pr, pr_review, refresh)

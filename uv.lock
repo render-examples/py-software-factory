@@ -1144,11 +1144,12 @@ dependencies = [
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "httpx2" },
     { name = "pydantic" },
-    { name = "pydantic-ai-harness" },
     { name = "pydantic-ai-slim", extra = ["anthropic"] },
     { name = "pyjwt" },
     { name = "render" },
+    { name = "truststore" },
     { name = "uvicorn" },
 ]
 
@@ -1159,17 +1160,22 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
+runner = [
+    { name = "pydantic-ai-slim", extra = ["anthropic"] },
+    { name = "truststore" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=46" },
     { name = "fastapi", specifier = ">=0.162" },
     { name = "httpx", specifier = ">=0.28" },
+    { name = "httpx2", specifier = "==2.16.0" },
     { name = "pydantic", specifier = ">=2.14" },
-    { name = "pydantic-ai-harness", specifier = "==0.68.0" },
     { name = "pydantic-ai-slim", extras = ["anthropic"], specifier = "==2.68.0" },
     { name = "pyjwt", specifier = ">=2.10" },
     { name = "render", specifier = "==1.8.0" },
+    { name = "truststore", specifier = "==0.10.5" },
     { name = "uvicorn", specifier = ">=0.54" },
 ]
 
@@ -1179,6 +1185,10 @@ dev = [
     { name = "pytest", specifier = ">=9.2" },
     { name = "pytest-asyncio", specifier = ">=1.5" },
     { name = "ruff", specifier = "==0.17.5" },
+]
+runner = [
+    { name = "pydantic-ai-slim", extras = ["anthropic"], specifier = "==2.68.0" },
+    { name = "truststore", specifier = "==0.10.5" },
 ]
 
 [[package]]
@@ -1203,20 +1213,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b4/fc/1203d011145c98ddce3cd2f505bb54375ef8d43223053df6bfcf3c746f46/pydantic-2.14.3.tar.gz", hash = "sha256:1054f237f4d4733e5a30e1e2333bd33a2004ab9ab1510bd053a9a31bb48e232d", size = 925636, upload-time = "2026-11-05T09:17:04.686Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/72/b8/b864503789ef5c58597d2a7b4adbee62c26440ab1e682581fc6838df8947/pydantic-2.14.3-py3-none-any.whl", hash = "sha256:3f7b347782ab7e4cf4c798496ae3a82787d9f21ec12676a9c564355eeef8daa8", size = 494071, upload-time = "2026-11-05T09:17:02.426Z" },
-]
-
-[[package]]
-name = "pydantic-ai-harness"
-version = "0.68.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "genai-prices" },
-    { name = "httpx2" },
-    { name = "pydantic-ai-slim" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/37/8d/cdfd58aa4b235b8d68a9a464444bbecd2e0a266d07ea8c4dc2d16cd793bf/pydantic_ai_harness-0.68.0.tar.gz", hash = "sha256:be4a33b72694ce2f4975ce20801976c1c6e9ff58a9157facc93ae2fded654ee6", size = 1573822, upload-time = "2026-11-12T02:30:18.186Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ff/5f/b6a4a45e7f5ea1e2a530a349b1f73444c813ac4b83321813f83c7f926aeb/pydantic_ai_harness-0.68.0-py3-none-any.whl", hash = "sha256:b74d420a21e9cd3183eec83da63e86b8d86d53ad120fbe6e6255897819c03157", size = 1915154, upload-time = "2026-11-12T02:30:05.454Z" },
 ]
 
 [[package]]

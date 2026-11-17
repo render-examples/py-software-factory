@@ -6,7 +6,7 @@ import base64
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import httpx
 
@@ -51,6 +51,7 @@ class GitCommit:
     sha: str
     tree_sha: str
     parents: tuple[str, ...]
+    committer: GitIdentity | None = None
 
 
 class GitDataClient:
@@ -69,10 +70,24 @@ class GitDataClient:
     async def get_commit(self, sha: str) -> GitCommit:
         result = await self._request("GET", f"/commits/{_require_sha(sha, 'commit')}")
         parents: list[Any] = get(result, "parents") or []
+        raw_committer = get(result, "committer")
+        committer_data = cast(dict[str, Any], raw_committer) if isinstance(raw_committer, dict) else None
+        committer = (
+            GitIdentity(
+                name=committer_data["name"],
+                email=committer_data["email"],
+                date=str(committer_data["date"]) if committer_data.get("date") else None,
+            )
+            if committer_data is not None
+            and isinstance(committer_data.get("name"), str)
+            and isinstance(committer_data.get("email"), str)
+            else None
+        )
         commit = GitCommit(
             sha=_require_sha(get(result, "sha"), "commit"),
             tree_sha=_require_sha(get(get(result, "tree"), "sha"), "tree"),
             parents=tuple(_require_sha(get(p, "sha"), "parent") for p in parents),
+            committer=committer,
         )
         if commit.sha != sha:
             raise RuntimeError(f"GitHub returned commit {commit.sha} for {sha}")

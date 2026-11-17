@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: factory-gateway
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: uv sync --frozen --no-dev
+    startCommand: uv run --frozen --no-dev python -m factory.gateway.main
+    healthCheckPath: /ready
+    autoDeployTrigger: checksPass
+    envVars:
+      - fromGroup: factory-gateway
+      - key: RENDER_WORKFLOW_SLUG
+        value: factory-workflows
+
+  - type: workflow
+    name: factory-workflows
+    runtime: python
+    region: oregon
+    buildCommand: uv sync --frozen --no-dev
+    startCommand: uv run --frozen --no-dev render-workflows factory.workflows.app:app
+    autoDeployTrigger: checksPass
+    envVars:
+      - fromGroup: factory-workflows
+
+# Blueprint-managed group shells make service wiring reproducible. Secret values
+# are added in the Dashboard or by an authorized setup operator; they are never
+# committed here. Environment groups do not support `sync: false`.
+envVarGroups:
+  - name: factory-gateway
+    envVars: []
+  - name: factory-workflows
+    envVars: []

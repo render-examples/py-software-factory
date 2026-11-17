@@ -56,6 +56,7 @@ class PullRequest:
     head_ref: str
     base_ref: str
     html_url: str
+    draft: bool = False
 
 
 @dataclass(frozen=True)

@@ -24,6 +24,32 @@ class ExecResult:
     stderr: str
 
 
+@dataclass(frozen=True)
+class BranchRef:
+    name: str
+
+
+@dataclass(frozen=True)
+class PullRef:
+    number: int
+    head_sha: str
+    base_branch: str | None = None
+
+
+SandboxRef = BranchRef | PullRef
+
+
+@dataclass(frozen=True)
+class SnapshotManifest:
+    repo: str
+    base_branch: str
+    sha: str
+    lockfile_hash: str
+    runner_requirements_hash: str
+    install: str | None
+    created_at: str
+
+
 class Sandbox(Protocol):
     """A running sandbox."""
 
@@ -41,3 +67,8 @@ class Sandbox(Protocol):
     async def close(self) -> None:
         """Idempotent: a sandbox that no longer exists counts as closed."""
         ...
+
+
+class OpenedSandbox(Sandbox, Protocol):
+    head_sha: str
+    manifest: SnapshotManifest

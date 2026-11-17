@@ -17,7 +17,7 @@ from factory.claims.status import (
     stop_run,
     take_over,
 )
-from factory.claims.trace import flow_identity, task_identity
+from factory.claims.trace import task_identity
 
 __all__ = [
     "WORKING_LABEL",
@@ -37,7 +37,6 @@ __all__ = [
     "TaskResult",
     "check_permission",
     "finish_status",
-    "flow_identity",
     "read_status",
     "set_status",
     "stop_run",

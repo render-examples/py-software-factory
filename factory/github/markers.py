@@ -21,7 +21,6 @@ from pydantic.alias_generators import to_camel
 from factory.github.types import IssueComment
 
 RunState = Literal["running", "done", "failed", "cancelled", "rejected"]
-RunKind = Literal["task", "flow"]
 
 _MAX_MARKER_CHARS = 48_000
 """GitHub caps a comment at 65,536 characters; the marker leaves room for the readable part."""
@@ -47,11 +46,8 @@ class StatusMarker(Marker):
     run_id: str = Field(min_length=1)
     trace_id: str | None = Field(default=None, min_length=1)
     """Root Workflows run. Differs from run_id when this run is a subtask."""
-    root_kind: RunKind | None = None
-    """Whether the root run is a task run or a flow run, so the run that stops it calls the right API. Absent
-    means a task run."""
     root_stage: str | None = Field(default=None, min_length=1)
-    """Registered name of the root task or flow, for cancellation telemetry."""
+    """Registered name of the root task, for cancellation telemetry."""
     stage: str = Field(min_length=1)
     title: str | None = Field(default=None, min_length=1)
     """The run's name as the comment shows it."""
