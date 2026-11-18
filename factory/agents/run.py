@@ -16,7 +16,7 @@ from factory.agents.errors import AgentError
 from factory.agents.registry import get_agent
 from factory.agents.tools import AgentDeps
 from factory.agents.workspace import SandboxWorkspaceBackend
-from factory.events import FactoryEvent, emit
+from factory.events import EventIds, FactoryEvent, emit
 from factory.runner.protocol import (
     RUNNER_EVENT_ADAPTER,
     ErrorEvent,
@@ -25,6 +25,7 @@ from factory.runner.protocol import (
     RunnerInput,
     UsageEvent,
 )
+from factory.sandbox.client import measure_sandbox_requests
 from factory.sandbox.shell import shq
 from factory.sandbox.types import APP_DIR, REPO_DIR, SCRATCH_DIR, Sandbox
 
@@ -72,7 +73,7 @@ async def run_agent(
     agent: AgentDefinition | str,
     message: str,
     *,
-    trace_id: str,
+    event_ids: EventIds,
     sandbox: Sandbox,
     placement: Placement | None = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
@@ -93,42 +94,51 @@ async def run_agent(
         raise ValueError(f"agent {definition.id} cannot be promoted from in-task to in-sandbox at runtime")
     if not message:
         raise ValueError("agent message must not be empty")
-    try:
-        if selected_placement == "in-task":
-            output, usage = await _run_in_task(
-                definition,
-                message,
-                sandbox,
-                timeout_seconds,
-                model,
-                workspace_factory,
-            )
-        else:
-            output, usage = await _run_in_sandbox(
-                definition,
-                message,
-                trace_id,
-                sandbox,
-                timeout_seconds,
-                sandbox_runner,
-            )
-    except AgentError:
-        raise
-    except UsageLimitExceeded as error:
-        raise AgentError(definition.id, "max_turns", str(error)) from error
-    except RunTimedOut as error:
-        raise AgentError(definition.id, "timeout", str(error)) from error
-    except UnexpectedModelBehavior as error:
-        raise AgentError(definition.id, "invalid_submission", str(error)) from error
-    except ValidationError as error:
-        raise AgentError(definition.id, "output_invalid", str(error)) from error
-    except Exception as error:
-        raise AgentError(definition.id, "agent_error", str(error)) from error
+    with measure_sandbox_requests() as sandbox_requests:
+        try:
+            if selected_placement == "in-task":
+                output, usage = await _run_in_task(
+                    definition,
+                    message,
+                    sandbox,
+                    timeout_seconds,
+                    model,
+                    workspace_factory,
+                )
+            else:
+                output, usage = await _run_in_sandbox(
+                    definition,
+                    message,
+                    event_ids.trace_id,
+                    sandbox,
+                    timeout_seconds,
+                    sandbox_runner,
+                )
+        except AgentError:
+            raise
+        except UsageLimitExceeded as error:
+            raise AgentError(definition.id, "max_turns", str(error)) from error
+        except RunTimedOut as error:
+            raise AgentError(definition.id, "timeout", str(error)) from error
+        except UnexpectedModelBehavior as error:
+            raise AgentError(definition.id, "invalid_submission", str(error)) from error
+        except ValidationError as error:
+            raise AgentError(definition.id, "output_invalid", str(error)) from error
+        except Exception as error:
+            raise AgentError(definition.id, "agent_error", str(error)) from error
     emit(
         FactoryEvent(
-            trace_id=trace_id,
+            trace_id=event_ids.trace_id,
             type="agent.finished",
-            payload={"agent_id": definition.id, "placement": selected_placement, "usage": usage},
+            payload={
+                "agent_id": definition.id,
+                "placement": selected_placement,
+                "usage": usage,
+                "sandbox_requests": sandbox_requests.count,
+            },
+            run_id=event_ids.run_id,
+            repo=event_ids.repo,
+            subject=event_ids.subject,
         )
     )
     return output

@@ -18,6 +18,7 @@ from factory.agents.run import UploadedSandboxRunner, run_agent
 from factory.agents.shell_policy import reject_reason
 from factory.agents.tools import AgentDeps, _shell_env, bash, edit, ls, read, write
 from factory.agents.workspace import SandboxWorkspaceBackend
+from factory.events import EventIds
 from factory.runner.protocol import ResultEvent, RunnerInput
 from factory.sandbox.types import (
     APP_DIR,
@@ -28,6 +29,8 @@ from factory.sandbox.types import (
     ExecResult,
     Sandbox,
 )
+
+EVENT_IDS = EventIds("trace-1", "run-1", "acme/repo", "issue#1")
 
 
 class FakeSandbox:
@@ -77,25 +80,40 @@ def output_model(data: dict[str, Any]) -> FunctionModel:
     return FunctionModel(respond)
 
 
-async def test_in_task_agent_returns_second_validated_output(tmp_path: Path) -> None:
+async def test_in_task_agent_returns_output_with_complete_telemetry(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     (tmp_path / "src").mkdir()
     sandbox = FakeSandbox()
     result = await run_agent(
         TRIAGE,
         "triage this",
-        trace_id="trace-1",
+        event_ids=EVENT_IDS,
         sandbox=sandbox,
         model=output_model(triage_output()),
         workspace_factory=lambda _sandbox: LocalWorkspaceBackend(tmp_path),
     )
     assert result.model_dump(by_alias=True)["decision"] == "draft"
+    event = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert event.pop("usage")["requests"] == 1
+    assert event == {
+        "level": "info",
+        "event": "agent.finished",
+        "trace_id": "trace-1",
+        "run_id": "run-1",
+        "repo": "acme/repo",
+        "subject": "issue#1",
+        "agent_id": "triage",
+        "placement": "in-task",
+        "sandbox_requests": 0,
+    }
 
 
 async def test_in_sandbox_definition_can_safely_fall_back_to_task_placement(tmp_path: Path) -> None:
     result = await run_agent(
         PR_REVIEWER,
         "review this",
-        trace_id="trace-fallback",
+        event_ids=EVENT_IDS,
         sandbox=FakeSandbox(),
         placement="in-task",
         model=output_model({"summary": "fine", "riskTier": "trivial", "comments": []}),
@@ -109,7 +127,7 @@ async def test_in_task_definition_cannot_be_promoted_to_sandbox() -> None:
         await run_agent(
             TRIAGE,
             "triage this",
-            trace_id="trace-unsafe",
+            event_ids=EVENT_IDS,
             sandbox=FakeSandbox(),
             placement="in-sandbox",
         )
@@ -190,7 +208,7 @@ async def test_in_sandbox_input_contains_no_model_key(monkeypatch: pytest.Monkey
     result = await run_agent(
         PR_REVIEWER,
         "review this",
-        trace_id="trace-2",
+        event_ids=EVENT_IDS,
         sandbox=FakeSandbox(),
         sandbox_runner=Runner(),
     )

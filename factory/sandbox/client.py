@@ -9,7 +9,9 @@ import re
 import tempfile
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypeVar, cast
@@ -33,6 +35,25 @@ from factory.sandbox.types import APP_DIR, ExecResult
 _T = TypeVar("_T")
 _OUTPUT_LIMIT = 256 * 1024
 _STATUS_RE = re.compile(r"\bstatus\s+(\d{3})\b")
+
+
+@dataclass
+class SandboxRequestMeter:
+    count: int = 0
+
+
+_REQUEST_METER: ContextVar[SandboxRequestMeter | None] = ContextVar("sandbox_request_meter", default=None)
+
+
+@contextmanager
+def measure_sandbox_requests() -> Generator[SandboxRequestMeter]:
+    """Count Sandbox API attempts made in this async context, including retries."""
+    meter = SandboxRequestMeter()
+    token = _REQUEST_METER.set(meter)
+    try:
+        yield meter
+    finally:
+        _REQUEST_METER.reset(token)
 
 
 class SnapshotApi(Protocol):
@@ -189,6 +210,9 @@ class PacedSandboxClient:
             raise ValueError("attempts must be positive")
         for attempt in range(limit):
             await self._pacer.wait()
+            meter = _REQUEST_METER.get()
+            if meter is not None:
+                meter.count += 1
             try:
                 return await operation()
             except Exception as error:

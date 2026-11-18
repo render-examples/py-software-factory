@@ -14,6 +14,16 @@ EventType = Literal["run.finished", "agent.finished"]
 
 
 @dataclass(frozen=True)
+class EventIds:
+    """Stable identifiers shared by every event emitted within one claimed run."""
+
+    trace_id: str
+    run_id: str
+    repo: str
+    subject: str
+
+
+@dataclass(frozen=True)
 class FactoryEvent:
     """How a task run or agent run ended."""
 

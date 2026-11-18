@@ -76,7 +76,7 @@ def _production_services() -> WorkflowServices:
             output = await run_agent(
                 TRIAGE,
                 message,
-                trace_id=claim.trace_id,
+                event_ids=claim.event_ids,
                 sandbox=cast(Any, sandbox),
             )
             return cast(TriageDecision, output)
@@ -85,7 +85,7 @@ def _production_services() -> WorkflowServices:
             output = await run_agent(
                 SPEC_WRITER,
                 message,
-                trace_id=claim.trace_id,
+                event_ids=claim.event_ids,
                 sandbox=cast(Any, sandbox),
             )
             return cast(SpecDraft, output)
@@ -106,7 +106,7 @@ def _production_services() -> WorkflowServices:
             output = await run_agent(
                 IMPLEMENTER,
                 message,
-                trace_id=claim.trace_id,
+                event_ids=claim.event_ids,
                 sandbox=cast(Any, sandbox),
                 placement=effective_placement(IMPLEMENTER, brokered_model_access),
                 timeout_seconds=60 * 60,
@@ -137,7 +137,7 @@ def _production_services() -> WorkflowServices:
             output = await run_agent(
                 PR_REVIEWER,
                 message,
-                trace_id=claim.trace_id,
+                event_ids=claim.event_ids,
                 sandbox=cast(Any, sandbox),
                 placement=effective_placement(PR_REVIEWER, brokered_model_access),
             )

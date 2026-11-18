@@ -22,7 +22,7 @@ from factory.claims.status import (
     take_over,
 )
 from factory.config import RepoContext, get_config
-from factory.events import FactoryEvent, emit
+from factory.events import EventIds, FactoryEvent, emit
 from factory.github import GitHubClient, RunState, github_for
 
 D = TypeVar("D")
@@ -117,14 +117,14 @@ class Claim:
         return self.identity.run_id
 
     @property
-    def event_ids(self) -> dict[str, str]:
+    def event_ids(self) -> EventIds:
         """The ids every event this run emits carries, including its agents' `agent.finished`."""
-        return {
-            "trace_id": self.trace_id,
-            "run_id": self.run_id,
-            "repo": self.repo.full_name,
-            "subject": self.subject.name,
-        }
+        return EventIds(
+            trace_id=self.trace_id,
+            run_id=self.run_id,
+            repo=self.repo.full_name,
+            subject=self.subject.name,
+        )
 
     async def assert_current(self) -> None:
         """Ends the run as superseded once a newer run owns this issue or PR. Call before durable writes."""

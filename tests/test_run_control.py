@@ -5,10 +5,12 @@ from typing import Any, cast
 
 import pytest
 from render.client.errors import ClientError
+from render.experimental.sandbox.errors import SandboxNotFoundError
 from render.workflows.context import TaskRunMetadata
 
 from factory.claims import RunNotFoundError, task_identity
 from factory.claims.run_control import RenderRunControl
+from factory.sandbox.client import ApiPacer, PacedSandboxClient, SandboxApi
 
 
 class FakeWorkflows:
@@ -33,7 +35,7 @@ class FakeSandboxes:
 
     async def terminate(self, sandbox_id: str) -> None:
         if self.missing:
-            raise ClientError("missing", status_code=404)
+            return
         self.terminated.append(sandbox_id)
 
 
@@ -57,7 +59,7 @@ def test_task_identity_uses_the_root_metadata_and_has_a_stable_local_fallback() 
 
 async def test_render_run_control_uses_task_apis_and_treats_missing_resources_as_gone() -> None:
     render = FakeRender()
-    control = RenderRunControl(cast(Any, render))
+    control = RenderRunControl(cast(Any, render), render.sandboxes)
 
     render.workflows.status = "paused"
     assert await control.get_status("trn-1") == "paused"
@@ -71,4 +73,15 @@ async def test_render_run_control_uses_task_apis_and_treats_missing_resources_as
         await control.get_status("trn-missing")
 
     render.sandboxes.missing = True
+    await control.terminate_sandbox("sbx-missing")
+
+
+async def test_render_run_control_delegates_real_missing_sandbox_shape_to_paced_client() -> None:
+    class MissingSandboxApi:
+        async def terminate(self, sandbox_id: str) -> None:
+            raise SandboxNotFoundError("missing")
+
+    render = FakeRender()
+    paced = PacedSandboxClient(cast(SandboxApi, MissingSandboxApi()), pacer=ApiPacer(0))
+    control = RenderRunControl(cast(Any, render), paced)
     await control.terminate_sandbox("sbx-missing")

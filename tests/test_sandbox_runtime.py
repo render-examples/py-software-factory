@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import os
 import shlex
@@ -28,7 +29,14 @@ from render.experimental.sandbox.types import (
 
 from factory.config import RepoContext
 from factory.config_model import RepoConfig
-from factory.sandbox.client import ApiPacer, PacedSandboxClient, RenderSandbox, SandboxApi, SandboxTimings
+from factory.sandbox.client import (
+    ApiPacer,
+    PacedSandboxClient,
+    RenderSandbox,
+    SandboxApi,
+    SandboxTimings,
+    measure_sandbox_requests,
+)
 from factory.sandbox.egress import builder_egress, task_egress
 from factory.sandbox.open import open_sandbox
 from factory.sandbox.shell import shq
@@ -188,6 +196,49 @@ async def test_explicit_pacer_override_wins_over_timing_config() -> None:
     await client.call(operation)
     await client.call(operation)
     assert clock.sleeps == pytest.approx([0.25])
+
+
+@pytest.mark.asyncio
+async def test_request_meter_isolates_concurrent_agent_contexts() -> None:
+    client = PacedSandboxClient(
+        cast(SandboxApi, FakeApi()),
+        timings=SandboxTimings(min_request_interval_seconds=0),
+    )
+
+    async def operation() -> str:
+        await asyncio.sleep(0)
+        return "ok"
+
+    async def measured(count: int) -> int:
+        with measure_sandbox_requests() as meter:
+            await asyncio.gather(*(client.call(operation) for _ in range(count)))
+            return meter.count
+
+    assert await asyncio.gather(measured(2), measured(3)) == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_request_meter_counts_each_retry_attempt() -> None:
+    client = PacedSandboxClient(
+        cast(SandboxApi, FakeApi()),
+        timings=SandboxTimings(
+            min_request_interval_seconds=0,
+            retry_base_seconds=0,
+            retry_attempts=3,
+        ),
+    )
+    attempts = 0
+
+    async def operation() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise RateLimitError("slow down", status_code=429)
+        return "ok"
+
+    with measure_sandbox_requests() as meter:
+        assert await client.call(operation) == "ok"
+    assert meter.count == 3
 
 
 @pytest.mark.asyncio
