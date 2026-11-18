@@ -106,7 +106,12 @@ def print_checks(checks: Sequence[Check], *, json_output: bool = False) -> int:
         print(json.dumps([asdict(check) for check in checks], indent=2))
     else:
         for check in checks:
-            marker = "PASS" if check.ok else ("FAIL" if check.required else "WARN")
+            if check.ok:
+                marker = "PASS"
+            elif check.required:
+                marker = "FAIL"
+            else:
+                marker = "WARN"
             print(f"{marker:4} {check.name}: {check.detail}")
     return 1 if any(check.required and not check.ok for check in checks) else 0
 

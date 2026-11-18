@@ -8,12 +8,13 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
 
 from factory.agents.definition import AgentDefinition, Placement
 from factory.agents.providers import model_hosts
 from factory.claims import Claim
 from factory.config import RepoContext, get_config
+from factory.github import PullRequest
+from factory.sandbox import OpenedRenderSandbox, Sandbox
 from factory.stages import PrReviewDeps, SpecToPrDeps, TriageDeps
 from factory.stages.refresh_snapshot import Snapshot
 
@@ -69,83 +70,77 @@ def _production_services() -> WorkflowServices:
     brokered_model_access = get_config().sandbox.brokered_model_access
 
     def triage(claim: Claim) -> TriageDeps:
-        async def open_for_branch(repo: RepoContext, branch: str):  # type: ignore[no-untyped-def]
+        async def open_for_branch(repo: RepoContext, branch: str) -> OpenedRenderSandbox:
             return await open_sandbox(repo, BranchRef(branch))
 
-        async def run_triage(message: str, sandbox: object) -> TriageDecision:
+        async def run_triage(message: str, sandbox: Sandbox) -> TriageDecision:
             output = await run_agent(
                 TRIAGE,
                 message,
                 event_ids=claim.event_ids,
-                sandbox=cast(Any, sandbox),
+                sandbox=sandbox,
             )
             return cast(TriageDecision, output)
 
-        async def run_writer(message: str, sandbox: object) -> SpecDraft:
+        async def run_writer(message: str, sandbox: Sandbox) -> SpecDraft:
             output = await run_agent(
                 SPEC_WRITER,
                 message,
                 event_ids=claim.event_ids,
-                sandbox=cast(Any, sandbox),
+                sandbox=sandbox,
             )
             return cast(SpecDraft, output)
 
-        return TriageDeps(open_for_branch, run_triage, run_writer)  # type: ignore[arg-type]
+        return TriageDeps(open_for_branch, run_triage, run_writer)
 
     def spec_to_pr(claim: Claim) -> SpecToPrDeps:
         git = git_data(claim.repo)
 
-        async def open_for_branch(repo: RepoContext, branch: str):  # type: ignore[no-untyped-def]
+        async def open_for_branch(repo: RepoContext, branch: str) -> OpenedRenderSandbox:
             return await open_sandbox(
                 repo,
                 BranchRef(branch),
                 model_egress=model_egress(IMPLEMENTER, brokered_model_access),
             )
 
-        async def implement(message: str, sandbox: object) -> Implementation:
+        async def implement(message: str, sandbox: Sandbox) -> Implementation:
             output = await run_agent(
                 IMPLEMENTER,
                 message,
                 event_ids=claim.event_ids,
-                sandbox=cast(Any, sandbox),
+                sandbox=sandbox,
                 placement=effective_placement(IMPLEMENTER, brokered_model_access),
                 timeout_seconds=60 * 60,
             )
             return cast(Implementation, output)
 
-        return SpecToPrDeps(
-            open_for_branch,
-            implement,
-            publish,
-            git,
-            close_git=True,
-        )  # type: ignore[arg-type]
+        return SpecToPrDeps(open_for_branch, implement, publish, git, close_git=True)
 
     def pr_review(claim: Claim) -> PrReviewDeps:
-        async def open_for_pull(repo: RepoContext, pull: object):  # type: ignore[no-untyped-def]
+        async def open_for_pull(repo: RepoContext, pull: PullRequest) -> OpenedRenderSandbox:
             return await open_sandbox(
                 repo,
                 PullRef(
-                    cast(Any, pull).number,
-                    cast(Any, pull).head_sha,
-                    cast(Any, pull).base_ref,
+                    pull.number,
+                    pull.head_sha,
+                    pull.base_ref,
                 ),
                 model_egress=model_egress(PR_REVIEWER, brokered_model_access),
             )
 
-        async def review(message: str, sandbox: object) -> Review:
+        async def review(message: str, sandbox: Sandbox) -> Review:
             output = await run_agent(
                 PR_REVIEWER,
                 message,
                 event_ids=claim.event_ids,
-                sandbox=cast(Any, sandbox),
+                sandbox=sandbox,
                 placement=effective_placement(PR_REVIEWER, brokered_model_access),
             )
             return cast(Review, output)
 
-        return PrReviewDeps(open_for_pull, review)  # type: ignore[arg-type]
+        return PrReviewDeps(open_for_pull, review)
 
-    async def refresh(repo: RepoContext, sha: str):  # type: ignore[no-untyped-def]
+    async def refresh(repo: RepoContext, sha: str) -> Snapshot:
         return await build_snapshot(sandbox_client(), repo, sha)
 
     return WorkflowServices(triage, spec_to_pr, pr_review, refresh)

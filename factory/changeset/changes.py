@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from factory.strings import json_string
+
 _SHA = re.compile(rb"^[0-9a-f]{40}$")
 _ZERO_SHA = "0" * 40
 _RAW_HEADER = re.compile(rb"^:(\d{6}) (\d{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) ([ADMT])$")
@@ -245,10 +247,6 @@ def _unsafe_path(path: str, raw_path: bytes) -> str | None:
     return None
 
 
-def _js_string(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
 def check_changes(file: ChangesFile, limits: PublishLimits) -> CheckedChanges | Refused:
     """Applies every publishing rule to the parsed file.
 
@@ -276,7 +274,7 @@ def check_changes(file: ChangesFile, limits: PublishLimits) -> CheckedChanges | 
         seen.add(path)
         unsafe = _unsafe_path(path, change.raw_path)
         if unsafe:
-            refused.append(Refusal("unsafe_path", f"Path {_js_string(path)} {unsafe}", path=path))
+            refused.append(Refusal("unsafe_path", f"Path {json_string(path)} {unsafe}", path=path))
             continue
         if path.startswith(_WORKFLOWS_DIR):
             refused.append(Refusal("workflow_file", f"Changes to {path} are not published", path=path))

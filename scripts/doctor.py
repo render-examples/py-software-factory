@@ -44,7 +44,7 @@ def _render_group_check(environment: dict[str, str]) -> Check:
     return Check("sandbox group", group.id == group_id, f"{group.name} ({group.region})")
 
 
-def _credential_check(environment: dict[str, str]) -> Check:
+async def _credential_check(environment: dict[str, str]) -> Check:
     if not get_config().sandbox.brokered_model_access:
         return Check(
             "credential brokering",
@@ -56,7 +56,7 @@ def _credential_check(environment: dict[str, str]) -> Check:
     if not group_id or not api_key:
         return Check("credential brokering", False, "sandbox group or Render API key missing")
     try:
-        credentials = asyncio.run(list_credentials(group_id, admin_api_key=api_key))
+        credentials = await list_credentials(group_id, admin_api_key=api_key)
     except Exception as error:
         return Check("credential brokering", False, str(error))
     actual = next((item for item in credentials if item.id == ANTHROPIC_CREDENTIAL.id), None)
@@ -114,6 +114,36 @@ async def _broker_probe(repository: str, installation_id: int) -> Check:
             await sandbox.close()
 
 
+async def _remote_checks(args: argparse.Namespace, environment: dict[str, str]) -> list[Check]:
+    checks = [_render_group_check(environment), await _credential_check(environment)]
+    if args.gateway_url:
+        try:
+            gateway_url = normalize_gateway_url(args.gateway_url)
+            checks.extend(await _gateway_checks(gateway_url))
+        except ValueError as error:
+            checks.append(Check("gateway URL", False, str(error)))
+    else:
+        checks.append(Check("gateway URL", False, "--gateway-url is required with --remote"))
+
+    installation: int | None = None
+    if args.repository:
+        try:
+            installation = await validate_or_apply(args.repository, apply_labels=False)
+        except Exception as error:
+            checks.append(Check("GitHub App", False, str(error)))
+        else:
+            checks.append(Check("GitHub App", True, f"installed on {args.repository}"))
+    else:
+        checks.append(Check("GitHub App", False, "--repository is required with --remote"))
+
+    if args.probe_brokering:
+        if not args.repository or installation is None:
+            checks.append(Check("credential broker live probe", False, "GitHub App validation must pass first"))
+        else:
+            checks.append(await _broker_probe(args.repository, installation))
+    return checks
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--env-file", type=Path, default=Path(".env"))
@@ -140,31 +170,7 @@ def main(argv: list[str] | None = None) -> int:
     checks = local_checks(environment, require_secrets=args.remote)
     if args.remote:
         os.environ.update(environment)
-        checks.append(_render_group_check(environment))
-        checks.append(_credential_check(environment))
-        if args.gateway_url:
-            try:
-                gateway_url = normalize_gateway_url(args.gateway_url)
-                checks.extend(asyncio.run(_gateway_checks(gateway_url)))
-            except ValueError as error:
-                checks.append(Check("gateway URL", False, str(error)))
-        else:
-            checks.append(Check("gateway URL", False, "--gateway-url is required with --remote"))
-        installation: int | None = None
-        if args.repository:
-            try:
-                installation = asyncio.run(validate_or_apply(args.repository, apply_labels=False))
-            except Exception as error:
-                checks.append(Check("GitHub App", False, str(error)))
-            else:
-                checks.append(Check("GitHub App", True, f"installed on {args.repository}"))
-        else:
-            checks.append(Check("GitHub App", False, "--repository is required with --remote"))
-        if args.probe_brokering:
-            if not args.repository or installation is None:
-                checks.append(Check("credential broker live probe", False, "GitHub App validation must pass first"))
-            else:
-                checks.append(asyncio.run(_broker_probe(args.repository, installation)))
+        checks.extend(asyncio.run(_remote_checks(args, environment)))
     return print_checks(checks, json_output=args.json_output)
 
 

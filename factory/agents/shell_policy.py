@@ -209,7 +209,12 @@ def _check_command(raw: list[str], scratch_dir: str) -> str | None:
     )
     if name in FILE_WRITERS or in_place:
         paths = [arg for arg in args if not arg.startswith("-")]
-        targets = paths[-1:] if name in {"cp", "ln"} else paths[1:] if name in {"chmod", "chown"} or in_place else paths
+        if name in {"cp", "ln"}:
+            targets = paths[-1:]
+        elif name in {"chmod", "chown"} or in_place:
+            targets = paths[1:]
+        else:
+            targets = paths
         allowed = (name == "tee" and not targets) or (
             bool(targets) and all(_in_scratch(path, scratch_dir) for path in targets)
         )

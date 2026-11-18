@@ -12,6 +12,7 @@ dependencies = [
     "httpx2==2.16.0",
     "pydantic>=2.14",
     "pydantic-ai-slim[anthropic]==2.68.0",
+    "pyyaml>=6.0",
     "pyjwt>=2.10",
     "render==1.8.0",
     "truststore==0.10.5",

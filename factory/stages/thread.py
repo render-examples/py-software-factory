@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pydantic import ValidationError
 
 from factory.github import Issue, IssueComment, QuestionsMarker, SpecMarker, find_marked_comment, parse_marker
-from factory.schemas import Spec, SpecDraft, SpecNotes, TriageDecision, issues
+from factory.schemas import Spec, SpecDraft, SpecNotes, TriageDecision
 
 
 @dataclass(frozen=True)
@@ -147,8 +147,3 @@ def _block(tag: str, attrs: dict[str, str | int], body: str) -> str:
     attributes = "".join(f' {key}="{re.sub(r"""[<>"&]""", "", str(value))}"' for key, value in attrs.items())
     safe = re.sub(r"<(/?)(issue|title|body|comment|factory-[\w-]*)", r"&lt;\1\2", body, flags=re.IGNORECASE)
     return f"<{tag}{attributes}>\n{safe.strip()}\n</{tag}>"
-
-
-def validation_issues(error: ValidationError) -> list[str]:
-    """Kept as a public seam for prompt tests."""
-    return issues(error)

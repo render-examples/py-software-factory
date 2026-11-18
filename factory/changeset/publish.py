@@ -68,40 +68,40 @@ class Published:
     changed_files: list[ChangedFile]
 
 
-async def publish(input: PublishInput, paths: PublishPaths | None = None) -> Published | Refused:
+async def publish(publish_input: PublishInput, paths: PublishPaths | None = None) -> Published | Refused:
     """Publishes the sandbox's working tree as one commit on `refs/heads/<branch>`.
 
     Returns a refusal when the change breaks a publishing rule, and raises on any verification mismatch, before a
     ref moves.
     """
     paths = paths or PublishPaths()
-    if not _SHA.fullmatch(input.base_sha):
-        raise ValueError(f"Invalid base SHA: {input.base_sha}")
-    if not is_safe_branch(input.branch):
-        raise ValueError(f"Invalid branch name: {input.branch}")
-    if not input.message.strip():
+    if not _SHA.fullmatch(publish_input.base_sha):
+        raise ValueError(f"Invalid base SHA: {publish_input.base_sha}")
+    if not is_safe_branch(publish_input.branch):
+        raise ValueError(f"Invalid branch name: {publish_input.branch}")
+    if not publish_input.message.strip():
         raise ValueError("Commit message is empty")
-    if input.limits is not None:
-        limits = input.limits
+    if publish_input.limits is not None:
+        limits = publish_input.limits
     else:
         configured = get_config().limits
         limits = PublishLimits(configured.max_changed_files, configured.max_file_bytes)
 
-    file = await _collect(input.sandbox, input.base_sha, limits, paths)
+    file = await _collect(publish_input.sandbox, publish_input.base_sha, limits, paths)
     checked = check_changes(parse_changes_file(file), limits)
     if isinstance(checked, Refused):
         return checked
 
-    git = input.git or git_data(input.repo)
+    git = publish_input.git or git_data(publish_input.repo)
     try:
-        return await _write(git, input, checked)
+        return await _write(git, publish_input, checked)
     finally:
-        if input.git is None:
+        if publish_input.git is None:
             await git.aclose()
 
 
-async def _write(git: GitDataClient, input: PublishInput, checked: CheckedChanges) -> Published:
-    base = await git.get_commit(input.base_sha)
+async def _write(git: GitDataClient, publish_input: PublishInput, checked: CheckedChanges) -> Published:
+    base = await git.get_commit(publish_input.base_sha)
 
     for sha, content in checked.blobs.items():
         created = await git.create_blob(content)
@@ -113,13 +113,19 @@ async def _write(git: GitDataClient, input: PublishInput, checked: CheckedChange
         raise RuntimeError(f"Tree mismatch: GitHub built {tree_sha}, the sandbox staged {checked.tree_sha}")
 
     commit_sha = await git.create_commit(
-        message=input.message,
+        message=publish_input.message,
         tree=tree_sha,
-        parents=[input.base_sha],
-        author=input.author,
-        committer=input.author,
+        parents=[publish_input.base_sha],
+        author=publish_input.author,
+        committer=publish_input.author,
     )
-    await _move_branch(git, input.branch, commit_sha, {input.base_sha}, set(input.owned_commits))
+    await _move_branch(
+        git,
+        publish_input.branch,
+        commit_sha,
+        {publish_input.base_sha},
+        set(publish_input.owned_commits),
+    )
     return Published(commit_sha=commit_sha, tree_sha=tree_sha, changed_files=checked.files)
 
 

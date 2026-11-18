@@ -8,6 +8,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from factory.identifiers import is_safe_branch, is_valid_repo_name
+from factory.strings import json_string
 
 Permission = Literal["triage", "write", "maintain", "admin"]
 
@@ -80,18 +81,19 @@ def assert_egress_hosts(hosts: tuple[str, ...] | list[str], where: str) -> None:
     for host in hosts:
         if not _EGRESS_HOST.fullmatch(host):
             raise ValueError(
-                f"{where}: egress host {_js(host)} must be a lowercase hostname such as pypi.org or *.example.com"
+                f"{where}: egress host {json_string(host)} must be a lowercase hostname "
+                "such as pypi.org or *.example.com"
             )
 
 
 def validate_config(config: FactoryConfig) -> None:
     """Checks what the field types can't."""
     for full_name, repo in config.repos.items():
-        where = f"factory_config.py repos[{_js(full_name)}]"
+        where = f"factory_config.py repos[{json_string(full_name)}]"
         if not is_valid_repo_name(full_name):
             raise ValueError(f'{where}: the key must be "owner/name"')
         if not is_safe_branch(repo.base_branch):
-            raise ValueError(f"{where}: base_branch {_js(repo.base_branch)} is not a safe Git branch name")
+            raise ValueError(f"{where}: base_branch {json_string(repo.base_branch)} is not a safe Git branch name")
         if repo.egress != "allow-all":
             assert_egress_hosts(repo.egress, where)
     label_values = tuple(config.labels.model_dump().values())
@@ -99,7 +101,3 @@ def validate_config(config: FactoryConfig) -> None:
         raise ValueError("factory_config.py labels must be distinct")
     if not config.command_prefix.strip() or any(c in config.command_prefix for c in "\r\n"):
         raise ValueError("factory_config.py command_prefix must be a non-empty single line")
-
-
-def _js(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'

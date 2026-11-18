@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
+import scripts.doctor as doctor
 from scripts.common import normalize_gateway_url, parse_env_file, validate_repository
 from scripts.doctor import _credential_check
 from scripts.preflight import blueprint_checks
@@ -74,6 +77,12 @@ services:
     assert all(check.ok for check in checks), checks
 
 
+def test_blueprint_checks_report_invalid_yaml() -> None:
+    [check] = blueprint_checks("services: [")
+    assert not check.ok
+    assert check.name == "blueprint YAML"
+
+
 def test_render_handoff_never_places_admin_key_in_runtime() -> None:
     handoff = "\n".join(render_handoff("sbg-abc123"))
     assert "FACTORY_SANDBOX_GROUP_ID=sbg-abc123" in handoff
@@ -81,7 +90,11 @@ def test_render_handoff_never_places_admin_key_in_runtime() -> None:
     assert "POST /v1/messages" in handoff
 
 
-def test_doctor_accepts_intentionally_disabled_brokering() -> None:
-    check = _credential_check({})
+async def test_doctor_accepts_intentionally_disabled_brokering() -> None:
+    check = await _credential_check({})
     assert check.ok
     assert "disabled" in check.detail
+
+
+def test_doctor_uses_one_event_loop_for_remote_checks() -> None:
+    assert inspect.getsource(doctor.main).count("asyncio.run(") == 1

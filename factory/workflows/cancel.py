@@ -24,17 +24,17 @@ async def cancel_run(
     gh: GitHubClient | None = None,
     runs: RunControl | None = None,
 ) -> dict[str, Any]:
-    input = CancelInput.model_validate(raw)
-    repo = require_repo(input.repo, input.installation_id)
+    task_input = CancelInput.model_validate(raw)
+    repo = require_repo(task_input.repo, task_input.installation_id)
     client = gh or github_for(repo)
     try:
         result = await cancel_stage(
             gh=client,
             runs=runs or RenderRunControl(),
             repo=repo,
-            number=input.number,
-            kind=input.kind,
-            actor=input.actor,
+            number=task_input.number,
+            kind=task_input.kind,
+            actor=task_input.actor,
             identity=task_identity(ctx.metadata),
         )
         return asdict(result)

@@ -12,10 +12,10 @@ triage = define_github_task(
         name=Tasks.TRIAGE,
         title="Triage",
         input_type=TriageInput,
-        subject=lambda input, _child: Subject("issue", input.issue),
+        subject=lambda task_input, _child: Subject("issue", task_input.issue),
         timeout_seconds=60 * 60,
     ),
-    lambda claim, input, _ctx: triage_stage(claim, input, get_services().triage(claim)),
+    lambda claim, task_input, _ctx: triage_stage(claim, task_input, get_services().triage(claim)),
 )
 
 triage_task = triage.task

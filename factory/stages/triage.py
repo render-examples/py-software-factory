@@ -24,9 +24,7 @@ class TriageGitHub(Protocol):
 
 
 class OpenedSandbox(SpecSandbox, Protocol):
-    id: str
-
-    async def close(self) -> None: ...
+    pass
 
 
 class OpenTriageSandbox(Protocol):
@@ -44,13 +42,13 @@ class TriageDeps:
     run_spec_writer: SpecWriter
 
 
-async def triage_stage(claim: Claim, input: TriageInput, deps: TriageDeps) -> Outcome[TriageHandoff]:
+async def triage_stage(claim: Claim, task_input: TriageInput, deps: TriageDeps) -> Outcome[TriageHandoff]:
     gh: TriageGitHub = claim.gh
-    issue = await gh.get_issue(input.issue)
-    comments = await gh.list_issue_comments(input.issue)
+    issue = await gh.get_issue(task_input.issue)
+    comments = await gh.list_issue_comments(task_input.issue)
     bot = await gh.bot_login()
-    if input.comment_id is not None:
-        trigger = next((comment for comment in comments if comment.id == input.comment_id), None)
+    if task_input.comment_id is not None:
+        trigger = next((comment for comment in comments if comment.id == task_input.comment_id), None)
         if trigger is None or trigger.author.login.lower() == bot.lower():
             return Outcome(
                 "skipped",

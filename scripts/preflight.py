@@ -6,6 +6,9 @@ import argparse
 import importlib
 import sys
 from pathlib import Path
+from typing import cast
+
+import yaml
 
 from scripts.common import ROOT, Check, command_check, load_environment, print_checks, require_values
 
@@ -21,18 +24,52 @@ WORKFLOW_ENV = (
 
 
 def blueprint_checks(text: str) -> list[Check]:
-    """Check the security- and contract-bearing parts without needing a YAML library."""
-    workflow = text.split("- type: workflow", 1)[1] if "- type: workflow" in text else ""
-    workflow = workflow.split("\n  - type:", 1)[0]
-    service_types = [line.strip() for line in text.splitlines() if line.strip().startswith("- type:")]
+    """Check security- and contract-bearing Blueprint structure."""
+    try:
+        parsed: object = yaml.safe_load(text)
+    except yaml.YAMLError as error:
+        return [Check("blueprint YAML", False, str(error))]
+    if not isinstance(parsed, dict):
+        return [Check("blueprint YAML", False, "top-level value must be a mapping")]
+    document = cast(dict[str, object], parsed)
+    raw_services = document.get("services")
+    service_values = cast(list[object], raw_services) if isinstance(raw_services, list) else []
+    services = [cast(dict[str, object], service) for service in service_values if isinstance(service, dict)]
+    service_types = [service.get("type") for service in services]
+    workflow = next(
+        (service for service in services if service.get("type") == "workflow"),
+        None,
+    )
+    if workflow is None:
+        workflow = {}
+    env_groups = _environment_groups(services)
     return [
-        Check("blueprint services", service_types == ["- type: web", "- type: workflow"], repr(service_types)),
-        Check("blueprint database", "\ndatabases:" not in text, "no database declared"),
-        Check("workflow runtime", "runtime: python" in workflow, "Python runtime"),
-        Check("workflow build", "uv sync --frozen --no-dev" in workflow, "locked uv build"),
-        Check("workflow plan", "\n    plan:" not in workflow, "service-level plan omitted"),
-        Check("secret groups", text.count("fromGroup: factory-") == 2, "gateway and workflow groups linked"),
+        Check("blueprint services", service_types == ["web", "workflow"], repr(service_types)),
+        Check("blueprint database", "databases" not in document, "no database declared"),
+        Check("workflow runtime", workflow.get("runtime") == "python", "Python runtime"),
+        Check("workflow build", workflow.get("buildCommand") == "uv sync --frozen --no-dev", "locked uv build"),
+        Check("workflow plan", "plan" not in workflow, "service-level plan omitted"),
+        Check(
+            "secret groups",
+            env_groups == {"factory-gateway", "factory-workflows"},
+            "gateway and workflow groups linked",
+        ),
     ]
+
+
+def _environment_groups(services: list[dict[str, object]]) -> set[str]:
+    groups: set[str] = set()
+    for service in services:
+        env_vars = service.get("envVars")
+        if not isinstance(env_vars, list):
+            continue
+        for entry in cast(list[object], env_vars):
+            if not isinstance(entry, dict):
+                continue
+            group = cast(dict[str, object], entry).get("fromGroup")
+            if isinstance(group, str):
+                groups.add(group)
+    return groups
 
 
 def local_checks(environment: dict[str, str], *, require_secrets: bool = False) -> list[Check]:

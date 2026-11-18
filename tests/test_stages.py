@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Never, cast
 
 import pytest
 
-from factory.claims import ExpectedFailure
-from factory.config import require_repo
-from factory.github import GitCommit, GitIdentity, PullRequest
+from factory.claims import Claim, ExpectedFailure
+from factory.config import RepoContext, require_repo
+from factory.github import GitCommit, GitIdentity, PullFile, PullRequest, PullRequestReview
 from factory.sandbox import ExecResult
+from factory.sandbox.errors import SandboxHeadMovedError
 from factory.schemas import PrReviewInput, Spec
 from factory.stages import parse_diff_lines, pr_review_stage, run_verify
 from factory.stages.branch import owned_commits
 from factory.stages.messages import implement_message
-from factory.stages.pr_review import PrReviewDeps
+from factory.stages.pr_review import PrReviewDeps, ReviewSandbox
 from tests.fixtures import REPO
 from tests.test_schemas import spec_json
 
@@ -67,6 +68,18 @@ class ReviewGitHub:
             html_url="url",
         )
 
+    async def bot_login(self) -> str:
+        return "factory[bot]"
+
+    async def list_reviews(self, pr: int) -> list[PullRequestReview]:
+        return []
+
+    async def list_pull_files(self, number: int) -> list[PullFile]:
+        return []
+
+    async def get_pull_diff(self, number: int) -> str:
+        return ""
+
 
 class ReviewClaim:
     def __init__(self) -> None:
@@ -74,22 +87,42 @@ class ReviewClaim:
         self.repo = require_repo(REPO, 1)
         self.run_id = "run"
 
+    async def report_progress(self, summary: str) -> None:
+        return None
 
-async def _never_open(_repo: object, _pull: object) -> Any:
+
+async def _never_open(repo: RepoContext, pull: PullRequest) -> Never:
+    del repo, pull
     raise AssertionError("stale heads must stop before opening a sandbox")
 
 
-async def _never_review(_message: str, _sandbox: object) -> Any:
+async def _never_review(message: str, sandbox: ReviewSandbox) -> Never:
+    del message, sandbox
     raise AssertionError("stale heads must stop before running an agent")
 
 
 async def test_pr_review_refuses_a_stale_labeled_head() -> None:
-    input = PrReviewInput(repo=REPO, installation_id=1, pr=7, head_sha=SHA, actor="maintainer")
+    task_input = PrReviewInput(repo=REPO, installation_id=1, pr=7, head_sha=SHA, actor="maintainer")
     with pytest.raises(ExpectedFailure) as caught:
         await pr_review_stage(
-            ReviewClaim(),  # type: ignore[arg-type]
-            input,
-            PrReviewDeps(_never_open, _never_review),  # type: ignore[arg-type]
+            cast(Claim, ReviewClaim()),
+            task_input,
+            PrReviewDeps(_never_open, _never_review),
+        )
+    assert caught.value.outcome == "head_moved"
+
+
+async def test_pr_review_translates_typed_sandbox_head_move() -> None:
+    async def moved(repo: RepoContext, pull: PullRequest) -> Never:
+        del repo, pull
+        raise SandboxHeadMovedError(REPO, 7, "c" * 40, "b" * 40)
+
+    task_input = PrReviewInput(repo=REPO, installation_id=1, pr=7, head_sha="b" * 40, actor="maintainer")
+    with pytest.raises(ExpectedFailure) as caught:
+        await pr_review_stage(
+            cast(Claim, ReviewClaim()),
+            task_input,
+            PrReviewDeps(moved, _never_review),
         )
     assert caught.value.outcome == "head_moved"
 

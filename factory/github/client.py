@@ -117,6 +117,21 @@ class GitHubClient:
             raise
         return True
 
+    async def upsert_label(self, name: str, color: str, description: str = "") -> None:
+        """Create a label or update its color and description when it already exists."""
+        body = {"name": name, "color": color, "description": description}
+        try:
+            await self.http.json("POST", f"{self._base}/labels", body=body)
+        except GitHubError as error:
+            if error.status != 422:
+                raise
+            await self.http.json(
+                "PATCH",
+                f"{self._base}/labels/{_segment(name)}",
+                body=body,
+                idempotent=True,
+            )
+
     async def add_labels(self, number: int, labels: Sequence[str]) -> None:
         if not labels:
             return

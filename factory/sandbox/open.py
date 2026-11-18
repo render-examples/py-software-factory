@@ -12,11 +12,13 @@ from dataclasses import dataclass
 from typing import cast
 
 from render.experimental.sandbox.errors import SnapshotNotFoundError, SnapshotNotReadyError
+from render.experimental.sandbox.types import NetworkPolicy
 
 from factory.config import RepoContext, get_config
 from factory.identifiers import is_safe_branch
 from factory.sandbox.client import PacedSandboxClient, RenderSandbox, sandbox_client
 from factory.sandbox.egress import egress_hint, task_egress
+from factory.sandbox.errors import SandboxHeadMovedError
 from factory.sandbox.operations import checked, configured_group_id, require_success
 from factory.sandbox.shell import shq
 from factory.sandbox.snapshot import (
@@ -150,20 +152,16 @@ async def _create_from_snapshot(
     client: PacedSandboxClient,
     repo: RepoContext,
     sandbox_group_id: str,
-    policy: object,
+    policy: NetworkPolicy,
     deps: OpenSandboxDeps,
 ) -> str:
-    from render.experimental.sandbox.types import NetworkPolicy
-
-    network_policy = cast(NetworkPolicy, policy)
-
     async def create() -> str:
         made = await client.create(
             name=f"task-{snapshot_name(repo)}",
             snapshot_name=snapshot_name(repo),
             timeout_seconds=get_config().sandbox.timeout_seconds,
             idle_timeout_seconds=0,
-            network_policy=network_policy,
+            network_policy=policy,
             sandbox_group_id=sandbox_group_id,
         )
         return made.id
@@ -250,7 +248,7 @@ async def _fetch_ref(
     if not SHA1_RE.fullmatch(sha):
         raise RuntimeError(f"fetching {source} gave {sha[:100]!r}")
     if isinstance(ref, PullRef) and sha != ref.head_sha:
-        raise RuntimeError(f"head moved: {repo.full_name}#{ref.number} is at {sha}, expected {ref.head_sha}")
+        raise SandboxHeadMovedError(repo.full_name, ref.number, sha, ref.head_sha)
     checkout = await sandbox.exec(
         f"git checkout --quiet --detach {shq(sha)}",
         timeout_seconds=control_timeout,

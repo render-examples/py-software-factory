@@ -18,9 +18,9 @@ def build() -> Any:
     # Reads RENDER_API_KEY.
     render = RenderAsync()
 
-    async def start_run(run: RunName, input: dict[str, Any], idempotency_key: str) -> str:
+    async def start_run(run: RunName, task_input: dict[str, Any], idempotency_key: str) -> str:
         slug = f"{workflow_slug}/{run}"
-        return (await render.workflows.start_task(slug, [input], idempotency_key=idempotency_key)).id
+        return (await render.workflows.start_task(slug, [task_input], idempotency_key=idempotency_key)).id
 
     return create_gateway(GatewayDeps(start_run=start_run, webhook_secret=webhook_secret))
 

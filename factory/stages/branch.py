@@ -44,8 +44,9 @@ def commit_date(now: datetime) -> str:
 async def bot_identity(gh: IdentityGitHub, date: str) -> GitIdentity:
     login = await gh.bot_login()
     request = gh.http.json
-    raw: Any = await request("GET", f"/users/{quote(login, safe='')}")
-    user_id: object = cast(Any, raw).get("id") if isinstance(raw, dict) else None
+    raw: object = await request("GET", f"/users/{quote(login, safe='')}")
+    record = cast(dict[str, object], raw) if isinstance(raw, dict) else {}
+    user_id = record.get("id")
     if not isinstance(user_id, int):
         raise RuntimeError(f"GET /users/{login} returned no id")
     return GitIdentity(login, f"{user_id}+{login}@users.noreply.github.com", date)

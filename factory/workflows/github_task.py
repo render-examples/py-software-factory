@@ -10,14 +10,15 @@ from pydantic import ValidationError
 from render.workflows import TaskContext, TaskDefinition
 
 from factory.claims import Claim, ClaimOptions, Outcome, RunControl, Subject, TaskResult, with_claim
+from factory.claims.claim import TerminalState
 from factory.claims.run_control import RenderRunControl
 from factory.claims.trace import task_identity
 from factory.config import require_repo
 from factory.github import GitHubClient
-from factory.schemas import TaskInput
+from factory.schemas.tasks import RepoInput
 from factory.workflows.app import app
 
-InputT = TypeVar("InputT", bound=TaskInput)
+InputT = TypeVar("InputT", bound=RepoInput)
 DataT = TypeVar("DataT")
 
 
@@ -48,15 +49,14 @@ def define_github_task(spec: GitHubTaskSpec[InputT], work: StageWork[InputT, Dat
         gh: GitHubClient | None = None,
         runs: RunControl | None = None,
     ) -> dict[str, Any]:
-        input = spec.input_type.model_validate(raw)
-        github_input = cast(Any, input)
-        repo = require_repo(github_input.repo, github_input.installation_id)
+        task_input = spec.input_type.model_validate(raw)
+        repo = require_repo(task_input.repo, task_input.installation_id)
         identity = task_identity(ctx.metadata)
         is_child = identity.trace_id != identity.run_id
-        actor = str(github_input.actor)
+        actor = task_input.actor
         options = ClaimOptions(
             repo=repo,
-            subject=spec.subject(input, is_child),
+            subject=spec.subject(task_input, is_child),
             task=spec.name,
             title=spec.title,
             actor=actor,
@@ -64,7 +64,7 @@ def define_github_task(spec: GitHubTaskSpec[InputT], work: StageWork[InputT, Dat
             mode="continue" if is_child else "replace",
             gh=gh,
         )
-        result = await with_claim(identity, options, lambda claim: work(claim, input, ctx))
+        result = await with_claim(identity, options, lambda claim: work(claim, task_input, ctx))
         return task_result_json(result)
 
     async def registered_entry(ctx: TaskContext, raw: object) -> dict[str, Any]:
@@ -86,8 +86,11 @@ def parse_task_result(raw: object) -> TaskResult[Any]:
     required = {"state", "outcome", "summary", "trace_id", "run_id"}
     if not required.issubset(result):
         raise ValueError("child task returned an incomplete result")
+    state = result["state"]
+    if state not in {"done", "failed", "cancelled", "rejected"}:
+        raise ValueError(f"child task returned invalid state {state!r}")
     return TaskResult(
-        state=result["state"],  # type: ignore[arg-type]
+        state=cast(TerminalState, state),
         outcome=str(result["outcome"]),
         summary=str(result["summary"]),
         trace_id=str(result["trace_id"]),

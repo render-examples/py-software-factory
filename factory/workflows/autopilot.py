@@ -6,6 +6,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict, cast
 
+from render.workflows import TaskDefinition
+
 from factory.claims import Claim, Outcome, Subject, TaskResult
 from factory.config import Tasks, get_config
 from factory.schemas import AutopilotInput
@@ -27,7 +29,8 @@ class AutopilotData(TypedDict):
     stages: list[AutopilotStage]
 
 
-ChildRunner = Callable[[object, object], Awaitable[object]]
+ChildTask = TaskDefinition[..., dict[str, Any]]
+ChildRunner = Callable[[ChildTask, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 @dataclass(frozen=True)
@@ -37,17 +40,17 @@ class AutopilotDeps:
 
 async def autopilot_stage(
     claim: Claim,
-    input: AutopilotInput,
+    task_input: AutopilotInput,
     ctx: TaskContext,
     deps: AutopilotDeps = AutopilotDeps(),
 ) -> Outcome[AutopilotData]:
     stages: list[AutopilotStage] = []
 
-    async def child(definition: object, payload: object) -> TaskResult[Any]:
+    async def child(definition: ChildTask, payload: dict[str, Any]) -> TaskResult[Any]:
         if deps.run_child is not None:
-            raw: object = await deps.run_child(definition, payload)
+            raw = await deps.run_child(definition, payload)
         else:
-            raw = cast(object, await cast(Any, ctx).run(definition, payload))
+            raw = await ctx.run(definition, payload)
         return parse_task_result(raw)
 
     def record(name: str, result: TaskResult[Any]) -> TaskResult[Any]:
@@ -70,23 +73,23 @@ async def autopilot_stage(
         return finish(f"stopped_at_{name.replace('-', '_')}", result.summary, state)
 
     base = {
-        "repo": input.repo,
-        "installation_id": input.installation_id,
-        "actor": input.actor,
+        "repo": task_input.repo,
+        "installation_id": task_input.installation_id,
+        "actor": task_input.actor,
     }
-    await claim.gh.remove_label(input.issue, get_config().labels.autopilot)
+    await claim.gh.remove_label(task_input.issue, get_config().labels.autopilot)
     await claim.report_progress("running Triage")
     triage = record(
         "triage",
         await child(
             triage_task,
-            {**base, "issue": input.issue, "comment_id": input.comment_id},
+            {**base, "issue": task_input.issue, "comment_id": task_input.comment_id},
         ),
     )
     triage_data = _json_object(triage.data)
     if triage.state == "done" and triage.outcome == "asked":
         await claim.assert_current()
-        await claim.gh.add_labels(input.issue, [get_config().labels.autopilot])
+        await claim.gh.add_labels(task_input.issue, [get_config().labels.autopilot])
         return finish("waiting_for_answers", triage.summary)
     if triage.state != "done" or triage_data is None or triage_data.get("kind") != "spec":
         return stop("triage", triage)
@@ -98,7 +101,7 @@ async def autopilot_stage(
             spec_to_pr_task,
             {
                 **base,
-                "issue": input.issue,
+                "issue": task_input.issue,
                 "approval": {
                     "kind": "autopilot",
                     "comment_id": triage_data["comment_id"],
@@ -121,7 +124,7 @@ async def autopilot_stage(
                 **base,
                 "pr": pr_data["pr"],
                 "head_sha": pr_data["head_sha"],
-                "autopilot_issue": input.issue,
+                "autopilot_issue": task_input.issue,
             },
         ),
     )
@@ -135,10 +138,10 @@ autopilot = define_github_task(
         name=Tasks.AUTOPILOT,
         title="Autopilot",
         input_type=AutopilotInput,
-        subject=lambda input, _child: Subject("issue", input.issue),
+        subject=lambda task_input, _child: Subject("issue", task_input.issue),
         timeout_seconds=8 * 60 * 60,
     ),
-    lambda claim, input, ctx: autopilot_stage(claim, input, ctx),
+    lambda claim, task_input, ctx: autopilot_stage(claim, task_input, ctx),
 )
 
 autopilot_task = autopilot.task

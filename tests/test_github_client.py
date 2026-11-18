@@ -141,6 +141,19 @@ class TestGitHubClient:
         with pytest.raises(GitHubError):
             await client(invalid).ensure_label("bad", "ffffff")
 
+    async def test_upsert_label_creates_or_updates_through_the_shared_client(self) -> None:
+        created = FakeGitHub(httpx.Response(201, json={"name": "x"}))
+        await client(created).upsert_label("x", "ffffff", "description")
+        assert [request.method for request in created.requests] == ["POST"]
+
+        existing = FakeGitHub(
+            httpx.Response(422, text="already exists"),
+            httpx.Response(200, json={"name": "x"}),
+        )
+        await client(existing).upsert_label("x", "000000", "updated")
+        assert [request.method for request in existing.requests] == ["POST", "PATCH"]
+        assert existing.body(1) == {"name": "x", "color": "000000", "description": "updated"}
+
     async def test_ensure_pull_opens_a_draft_and_recovers_from_losing_a_race(self) -> None:
         fresh = FakeGitHub(httpx.Response(200, json=[]), httpx.Response(201, json=RAW_PULL))
         _, created = await client(fresh).ensure_pull(head="h", base="main", title="t", body="b")

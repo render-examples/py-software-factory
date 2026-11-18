@@ -58,16 +58,16 @@ class SpecToPrDeps:
     close_git: bool = False
 
 
-async def spec_to_pr_stage(claim: Claim, input: SpecToPrInput, deps: SpecToPrDeps) -> Outcome[SpecToPrHandoff]:
+async def spec_to_pr_stage(claim: Claim, task_input: SpecToPrInput, deps: SpecToPrDeps) -> Outcome[SpecToPrHandoff]:
     gh = claim.gh
-    approved = await load_approved_spec(claim.gh, input.issue, input.approval)
-    issue = await gh.get_issue(input.issue)
+    approved = await load_approved_spec(claim.gh, task_input.issue, task_input.approval)
+    issue = await gh.get_issue(task_input.issue)
     if issue.is_pull:
         raise ExpectedFailure("Spec-to-PR runs on issues, not pull requests.", "not_an_issue")
 
     date = commit_date(deps.now())
     author = await deps.identity(gh, date)
-    branch = branch_name(input.issue)
+    branch = branch_name(task_input.issue)
     await claim.report_progress("opening a sandbox")
     sandbox: ImplementationSandbox | None = None
     try:
@@ -90,7 +90,10 @@ async def spec_to_pr_stage(claim: Claim, input: SpecToPrInput, deps: SpecToPrDep
             if all_passed(verification):
                 break
             if repair_round == rounds:
-                after = f" after {rounds} repair round{'' if rounds == 1 else 's'}" if rounds else ""
+                after = ""
+                if rounds:
+                    suffix = "" if rounds == 1 else "s"
+                    after = f" after {rounds} repair round{suffix}"
                 raise ExpectedFailure(
                     f"verification failed{after}: {failure_summary(verification)}. No PR was opened.",
                     "verification_failed",
@@ -118,7 +121,7 @@ async def spec_to_pr_stage(claim: Claim, input: SpecToPrInput, deps: SpecToPrDep
                 repo=claim.repo,
                 base_sha=base_sha,
                 branch=branch,
-                message=commit_message(approved.spec, input.issue),
+                message=commit_message(approved.spec, task_input.issue),
                 author=author,
                 git=deps.git,
                 owned_commits=owned,
@@ -135,7 +138,7 @@ async def spec_to_pr_stage(claim: Claim, input: SpecToPrInput, deps: SpecToPrDep
             base=claim.repo.config.base_branch,
             title=pull_request_title(approved.spec),
             body=pull_request_body(
-                issue=input.issue,
+                issue=task_input.issue,
                 spec=approved.spec,
                 implementation=implementation,
                 verification=[VerifyResult(run.command, run.passed, run.duration_ms) for run in verification],

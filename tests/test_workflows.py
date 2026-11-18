@@ -1,19 +1,21 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
 import pytest
+from render import TaskContext
 from render.workflows.context import TaskRunMetadata
 
 from factory.agents.registry import IMPLEMENTER
-from factory.claims import ClaimOptions, RunIdentity, TaskResult
+from factory.claims import Claim, ClaimOptions, Outcome, RunControl, RunIdentity, TaskResult
 from factory.config import require_repo
-from factory.github import Actor, IssueComment, StatusMarker, render_marker
+from factory.github import Actor, GitHubClient, IssueComment, Permission, StatusMarker, render_marker
 from factory.schemas import AutopilotInput, TriageInput
 from factory.stages import cancel_stage
 from factory.workflows.app import app
-from factory.workflows.autopilot import AutopilotDeps, autopilot_stage
+from factory.workflows.autopilot import AutopilotDeps, ChildTask, autopilot_stage
 from factory.workflows.refresh_snapshot import refresh_snapshot_run
 from factory.workflows.services import effective_placement, model_egress
 from factory.workflows.triage import run_triage
@@ -22,7 +24,7 @@ from tests.fixtures import REPO
 SHA = "a" * 40
 
 
-def result(outcome: str, data: object = None, *, state: str = "done") -> dict[str, object]:
+def result(outcome: str, data: Any = None, *, state: str = "done") -> dict[str, Any]:
     return {
         "state": state,
         "outcome": outcome,
@@ -40,7 +42,7 @@ class AutopilotGitHub:
     async def remove_label(self, number: int, label: str) -> None:
         self.labels.append((f"-{label}", number))
 
-    async def add_labels(self, number: int, labels: list[str]) -> None:
+    async def add_labels(self, number: int, labels: Sequence[str]) -> None:
         self.labels.extend((f"+{label}", number) for label in labels)
 
 
@@ -61,17 +63,12 @@ class ChildContext:
     metadata = TaskRunMetadata(task_run_id="root")
 
 
-class NamedTask(Protocol):
-    name: str
-
-
 async def test_autopilot_orders_children_and_hands_off_typed_json() -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def run_child(task: object, payload: object) -> object:
-        name = cast(NamedTask, task).name
-        body = cast(dict[str, Any], payload)
-        calls.append((name, body))
+    async def run_child(task: ChildTask, payload: dict[str, Any]) -> dict[str, Any]:
+        name = task.name
+        calls.append((name, payload))
         if name == "triage":
             return result(
                 "drafted",
@@ -81,11 +78,11 @@ async def test_autopilot_orders_children_and_hands_off_typed_json() -> None:
             return result("pr_opened", {"kind": "pull_request", "pr": 23, "head_sha": SHA})
         return result("reviewed")
 
-    input = AutopilotInput(repo=REPO, installation_id=1, issue=7, actor="maintainer")
+    task_input = AutopilotInput(repo=REPO, installation_id=1, issue=7, actor="maintainer")
     outcome = await autopilot_stage(
-        AutopilotClaim(),  # type: ignore[arg-type]
-        input,
-        ChildContext(),  # type: ignore[arg-type]
+        cast(Claim, AutopilotClaim()),
+        task_input,
+        cast(TaskContext, ChildContext()),
         AutopilotDeps(run_child),
     )
     assert outcome.outcome == "completed"
@@ -109,23 +106,28 @@ async def test_autopilot_orders_children_and_hands_off_typed_json() -> None:
 async def test_autopilot_questions_restore_the_label_and_stop() -> None:
     claim = AutopilotClaim()
 
-    async def ask(_task: object, _payload: object) -> object:
+    async def ask(_task: ChildTask, _payload: dict[str, Any]) -> dict[str, Any]:
         return result("asked")
 
     outcome = await autopilot_stage(
-        claim,  # type: ignore[arg-type]
+        cast(Claim, claim),
         AutopilotInput(repo=REPO, installation_id=1, issue=7, actor="maintainer"),
-        ChildContext(),  # type: ignore[arg-type]
+        cast(TaskContext, ChildContext()),
         AutopilotDeps(ask),
     )
     assert outcome.outcome == "waiting_for_answers"
     assert claim.gh.labels[-1] == ("+factory:autopilot", 7)
 
 
-async def test_child_github_task_continues_the_root_claim(monkeypatch: Any) -> None:
+async def test_child_github_task_continues_the_root_claim(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
-    async def fake_with_claim(identity: RunIdentity, options: object, work: object) -> TaskResult[None]:
+    async def fake_with_claim(
+        identity: RunIdentity,
+        options: ClaimOptions,
+        work: Callable[[Claim], Awaitable[Outcome[Any]]],
+    ) -> TaskResult[Any]:
+        del work
         captured["identity"] = identity
         captured["options"] = options
         return TaskResult("done", "ok", "ok", identity.trace_id, identity.run_id)
@@ -140,10 +142,10 @@ async def test_child_github_task_continues_the_root_claim(monkeypatch: Any) -> N
         )
 
     await run_triage(
-        Context(),  # type: ignore[arg-type]
+        cast(TaskContext, Context()),
         TriageInput(repo=REPO, installation_id=1, issue=7, actor="maintainer").model_dump(),
-        gh=object(),  # type: ignore[arg-type]
-        runs=object(),  # type: ignore[arg-type]
+        gh=cast(GitHubClient, object()),
+        runs=cast(RunControl, object()),
     )
     assert captured["identity"] == RunIdentity("root", "child")
     assert cast(ClaimOptions, captured["options"]).mode == "continue"
@@ -165,7 +167,7 @@ class CancelGitHub:
         self.comment = IssueComment(1, marker, Actor("software-factory[bot]", "Bot"), "", "", "url")
         self.updated = ""
 
-    async def get_permission(self, login: str) -> str:
+    async def get_permission(self, login: str) -> Permission:
         return "write"
 
     async def bot_login(self) -> str:
@@ -184,7 +186,7 @@ class CancelGitHub:
     async def ensure_label(self, name: str, color: str, description: str = "") -> None:
         return None
 
-    async def add_labels(self, number: int, labels: list[str]) -> None:
+    async def add_labels(self, number: int, labels: Sequence[str]) -> None:
         return None
 
     async def remove_label(self, number: int, label: str) -> None:
@@ -249,8 +251,11 @@ def test_broker_setting_controls_model_placement_and_egress_together() -> None:
 
 async def test_snapshot_refresh_checks_the_push_actors_current_permission() -> None:
     class NoPermission:
-        async def get_permission(self, login: str) -> str:
+        async def get_permission(self, login: str) -> Permission:
             return "read"
+
+        async def aclose(self) -> None:
+            return None
 
     with pytest.raises(PermissionError, match="permission"):
         await refresh_snapshot_run(
@@ -260,5 +265,5 @@ async def test_snapshot_refresh_checks_the_push_actors_current_permission() -> N
                 "sha": SHA,
                 "actor": "reader",
             },
-            gh=cast(Any, NoPermission()),
+            gh=NoPermission(),
         )

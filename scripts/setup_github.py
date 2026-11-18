@@ -6,10 +6,10 @@ import argparse
 import asyncio
 from dataclasses import dataclass
 from typing import cast
-from urllib.parse import quote
 
 from factory.config import get_config
 from factory.github.auth import app_jwt, github_token
+from factory.github.client import GitHubClient
 from factory.github.request import GitHubHttp
 from scripts.common import fail, validate_repository
 
@@ -59,14 +59,14 @@ async def validate_or_apply(repository: str, *, apply_labels: bool) -> int:
     async def installation_token() -> str:
         return token
 
-    http = GitHubHttp(installation_token)
+    github = GitHubClient(owner, name, GitHubHttp(installation_token))
     try:
-        await http.json("GET", f"/repos/{owner}/{name}")
+        await github.http.json("GET", f"/repos/{owner}/{name}")
         if apply_labels:
             for label in desired_labels():
-                await _ensure_label(http, owner, name, label)
+                await github.upsert_label(label.name, label.color, label.description)
     finally:
-        await http.aclose()
+        await github.aclose()
     slug_value = cast(dict[str, object], app).get("slug") if isinstance(app, dict) else None
     slug = slug_value if isinstance(slug_value, str) else "<unknown>"
     print(f"Validated GitHub App {slug!r}, installation {install}, repository {repository}.")
@@ -77,23 +77,6 @@ async def validate_or_apply(repository: str, *, apply_labels: bool) -> int:
 
 async def _app_token() -> str:
     return app_jwt()
-
-
-async def _ensure_label(http: GitHubHttp, owner: str, repo: str, label: Label) -> None:
-    path = f"/repos/{owner}/{repo}/labels"
-    existing = cast(list[object], await http.paginate(path))
-    by_name = {
-        name
-        for item in existing
-        if isinstance(item, dict)
-        for name in [cast(dict[str, object], item).get("name")]
-        if isinstance(name, str)
-    }
-    body = {"name": label.name, "color": label.color, "description": label.description}
-    if label.name in by_name:
-        await http.json("PATCH", f"{path}/{quote(label.name, safe='')}", body=body, idempotent=True)
-    else:
-        await http.json("POST", path, body=body)
 
 
 def parser() -> argparse.ArgumentParser:

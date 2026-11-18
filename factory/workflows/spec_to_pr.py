@@ -12,10 +12,10 @@ spec_to_pr = define_github_task(
         name=Tasks.SPEC_TO_PR,
         title="Spec-to-PR",
         input_type=SpecToPrInput,
-        subject=lambda input, _child: Subject("issue", input.issue),
+        subject=lambda task_input, _child: Subject("issue", task_input.issue),
         timeout_seconds=4 * 60 * 60,
     ),
-    lambda claim, input, _ctx: spec_to_pr_stage(claim, input, get_services().spec_to_pr(claim)),
+    lambda claim, task_input, _ctx: spec_to_pr_stage(claim, task_input, get_services().spec_to_pr(claim)),
 )
 
 spec_to_pr_task = spec_to_pr.task

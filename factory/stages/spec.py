@@ -9,6 +9,7 @@ from factory.claims import ExpectedFailure, Outcome, StatusLink
 from factory.config import get_config
 from factory.format import render_spec, sanitize_inline, truncate
 from factory.github import Issue, IssueComment, SpecMarker, content_hash, render_marker
+from factory.sandbox import Sandbox
 from factory.schemas import SpecDraft, validate_spec
 from factory.stages.thread import CurrentSpec, retry_message
 
@@ -20,16 +21,8 @@ class TriageHandoff(TypedDict):
     version: int
 
 
-class ExecResult(Protocol):
-    exit_code: int
-    stdout: str
-    stderr: str
-
-
-class SpecSandbox(Protocol):
-    async def exec(
-        self, command: str, *, timeout_seconds: float | None = None, as_runner: bool = False
-    ) -> ExecResult: ...
+class SpecSandbox(Sandbox, Protocol):
+    pass
 
 
 class SpecGitHub(Protocol):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import posixpath
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Literal
 
 from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.tools import Tool
@@ -29,8 +29,20 @@ class AgentDeps:
 
 
 def create_tools(names: tuple[ToolName, ...]) -> list[Tool[AgentDeps]]:
-    functions = {"read": read, "ls": ls, "bash": bash, "edit": edit, "write": write}
-    return [Tool(cast(Any, functions[name])) for name in names]
+    tools: list[Tool[AgentDeps]] = []
+    for name in names:
+        match name:
+            case "read":
+                tools.append(Tool(read))
+            case "ls":
+                tools.append(Tool(ls))
+            case "bash":
+                tools.append(Tool(bash))
+            case "edit":
+                tools.append(Tool(edit))
+            case "write":
+                tools.append(Tool(write))
+    return tools
 
 
 async def read(ctx: RunContext[AgentDeps], path: str, offset: int = 1, limit: int = DEFAULT_MAX_LINES) -> str:

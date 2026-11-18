@@ -9,6 +9,8 @@ from typing import Protocol
 from factory.claims import Claim, Outcome, StatusLink
 from factory.config import RepoContext
 from factory.github import PullFile, PullRequest
+from factory.sandbox import Sandbox
+from factory.sandbox.errors import SandboxHeadMovedError
 from factory.schemas import PrReviewInput, Review
 from factory.stages.checkout import head_moved, merge_base
 from factory.stages.diff_lines import commentable, pull_diff_lines
@@ -17,10 +19,8 @@ from factory.stages.review_messages import reviewer_message
 from factory.stages.verify import VerifySandbox, run_verify
 
 
-class ReviewSandbox(VerifySandbox, Protocol):
-    id: str
-
-    async def close(self) -> None: ...
+class ReviewSandbox(VerifySandbox, Sandbox, Protocol):
+    pass
 
 
 class ReviewStageGitHub(ReviewGitHub, Protocol):
@@ -42,30 +42,28 @@ class PrReviewDeps:
     run_reviewer: RunReviewer
 
 
-async def pr_review_stage(claim: Claim, input: PrReviewInput, deps: PrReviewDeps) -> Outcome[None]:
+async def pr_review_stage(claim: Claim, task_input: PrReviewInput, deps: PrReviewDeps) -> Outcome[None]:
     gh: ReviewStageGitHub = claim.gh
-    pull = await gh.get_pull(input.pr)
+    pull = await gh.get_pull(task_input.pr)
     if pull.state != "open" or pull.merged:
         return Outcome("pr_closed", "the pull request is closed, so there's nothing to review.")
-    if pull.head_sha != input.head_sha:
+    if pull.head_sha != task_input.head_sha:
         raise head_moved()
-    existing = await find_review(gh, input.pr, input.head_sha)
+    existing = await find_review(gh, task_input.pr, task_input.head_sha)
     if existing:
         return Outcome(
             "already_reviewed",
             "this commit already has a factory review.",
             links=(StatusLink("Review", existing.html_url),),
         )
-    files = await gh.list_pull_files(input.pr)
-    diff_lines = await pull_diff_lines(gh, input.pr, files)
+    files = await gh.list_pull_files(task_input.pr)
+    diff_lines = await pull_diff_lines(gh, task_input.pr, files)
 
     await claim.report_progress("opening a sandbox")
     try:
         sandbox = await deps.open_sandbox(claim.repo, pull)
-    except Exception as error:
-        if str(error).startswith("head moved"):
-            raise head_moved() from error
-        raise
+    except SandboxHeadMovedError as error:
+        raise head_moved() from error
     try:
         await claim.track_sandbox(sandbox.id)
         base_ref = await merge_base(sandbox, pull.base_ref)
@@ -79,14 +77,14 @@ async def pr_review_stage(claim: Claim, input: PrReviewInput, deps: PrReviewDeps
     finally:
         await sandbox.close()
 
-    # Recheck immediately before the durable write. The input commit remains the only allowed target.
-    if (await gh.get_pull(input.pr)).head_sha != input.head_sha:
+    # Recheck immediately before the durable write. The trigger commit remains the only allowed target.
+    if (await gh.get_pull(task_input.pr)).head_sha != task_input.head_sha:
         raise head_moved()
     await claim.report_progress("posting the review")
     posted, inline_count = await post_review(
         gh,
-        pr=input.pr,
-        head_sha=input.head_sha,
+        pr=task_input.pr,
+        head_sha=task_input.head_sha,
         run_id=claim.run_id,
         review=review,
         verification=verification,
