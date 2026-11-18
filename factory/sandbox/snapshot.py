@@ -22,10 +22,12 @@ from render.experimental.sandbox.errors import SnapshotNotFoundError
 from factory.config import RepoContext
 from factory.github.auth import github_token
 from factory.github.client import github_for
+from factory.github.request import encode_path
+from factory.identifiers import is_safe_branch
 from factory.sandbox.client import PacedSandboxClient, RenderSandbox
 from factory.sandbox.egress import builder_egress, egress_hint
 from factory.sandbox.operations import checked, configured_group_id, require_success
-from factory.sandbox.shell import SAFE_REF, shq
+from factory.sandbox.shell import shq
 from factory.sandbox.types import (
     APP_DIR,
     REPO_DIR,
@@ -104,14 +106,14 @@ async def read_token(repo: RepoContext) -> str:
 
 async def resolve_base_head(repo: RepoContext) -> str:
     """Read the configured branch tip from GitHub's API, not repository-controlled git output."""
-    if not SAFE_REF.fullmatch(repo.config.base_branch):
+    if not is_safe_branch(repo.config.base_branch):
         raise ValueError(f"{repo.full_name}: unsupported base branch {repo.config.base_branch!r}")
     github = github_for(repo)
     try:
         raw = await github.http.json(
             "GET",
             f"/repos/{quote(repo.owner, safe='')}/{quote(repo.name, safe='')}/git/ref/"
-            f"heads/{quote(repo.config.base_branch, safe='')}",
+            f"heads/{encode_path(repo.config.base_branch)}",
         )
     finally:
         await github.aclose()
@@ -135,6 +137,8 @@ def build_runner_bundle(root: Path = PROJECT_ROOT) -> RunnerBundle:
     files: dict[str, bytes] = {}
     factory_init = root / "factory" / "__init__.py"
     files["factory/__init__.py"] = factory_init.read_bytes() if factory_init.is_file() else b""
+    identifiers = root / "factory" / "identifiers.py"
+    files["factory/identifiers.py"] = identifiers.read_bytes()
     for package in ("runner", "agents", "schemas"):
         base = root / "factory" / package
         if base.is_dir():
@@ -205,7 +209,7 @@ async def build_snapshot(
     if not SHA1_RE.fullmatch(sha):
         raise ValueError(f"refusing to build {repo.full_name} at {sha!r}: not a commit SHA")
     branch = repo.config.base_branch
-    if not SAFE_REF.fullmatch(branch):
+    if not is_safe_branch(branch):
         raise ValueError(f"{repo.full_name}: unsupported base branch {branch!r}")
     group_id = sandbox_group_id or configured_group_id()
     policy = builder_egress(repo)

@@ -14,10 +14,11 @@ from typing import cast
 from render.experimental.sandbox.errors import SnapshotNotFoundError, SnapshotNotReadyError
 
 from factory.config import RepoContext, get_config
+from factory.identifiers import is_safe_branch
 from factory.sandbox.client import PacedSandboxClient, RenderSandbox, sandbox_client
 from factory.sandbox.egress import egress_hint, task_egress
 from factory.sandbox.operations import checked, configured_group_id, require_success
-from factory.sandbox.shell import SAFE_REF, shq
+from factory.sandbox.shell import shq
 from factory.sandbox.snapshot import (
     SHA1_RE,
     BuiltSnapshot,
@@ -261,14 +262,14 @@ async def _fetch_ref(
 
 def _check_ref(ref: SandboxRef) -> None:
     if isinstance(ref, BranchRef):
-        if not SAFE_REF.fullmatch(ref.name):
+        if not is_safe_branch(ref.name):
             raise ValueError(f"unsupported branch name {ref.name!r}")
         return
     if isinstance(ref.number, bool) or ref.number <= 0:
         raise ValueError(f"invalid pull request number {ref.number}")
     if not SHA1_RE.fullmatch(ref.head_sha):
         raise ValueError(f"invalid head SHA {ref.head_sha!r}")
-    if ref.base_branch is not None and not SAFE_REF.fullmatch(ref.base_branch):
+    if ref.base_branch is not None and not is_safe_branch(ref.base_branch):
         raise ValueError(f"unsupported base branch name {ref.base_branch!r}")
 
 

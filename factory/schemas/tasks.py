@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, Field
+from pydantic import AwareDatetime, Field, field_validator
 
+from factory.identifiers import is_valid_repo_name
 from factory.schemas.base import TaskInput
 
 PositiveInt = Annotated[int, Field(gt=0)]
@@ -14,8 +15,15 @@ ActorLogin = Annotated[str, Field(min_length=1)]
 
 
 class RepoInput(TaskInput):
-    repo: str = Field(pattern=r"^[\w.-]+/[\w.-]+$")
+    repo: str = Field(min_length=3, max_length=200)
     installation_id: PositiveInt
+
+    @field_validator("repo")
+    @classmethod
+    def _repository_name(cls, value: str) -> str:
+        if not is_valid_repo_name(value):
+            raise ValueError('repository must be ASCII "owner/name" with no dot segments')
+        return value
 
 
 class TriageInput(RepoInput):

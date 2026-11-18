@@ -38,6 +38,7 @@ def test_schemas_import_no_host_only_code() -> None:
     """The in-sandbox runner imports the schemas, so they must not pull in GitHub, sandbox, claims, or config."""
     assert modules_loaded_by("factory.schemas") <= {
         "factory",
+        "factory.identifiers",
         "factory.schemas",
         "factory.schemas.base",
         "factory.schemas.implementation",

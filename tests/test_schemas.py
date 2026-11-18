@@ -106,6 +106,11 @@ class TestTaskInputs:
                 {**self.base, "approval": {"kind": "label", "labeled_at": "2026-10-25T12:00:00"}}
             )
 
+    @pytest.mark.parametrize("repository", ["../web", "acme/..", "acmé/web", "acme/web/extra"])
+    def test_rejects_unsafe_repository_names(self, repository: str) -> None:
+        with pytest.raises(ValidationError, match="repository must be ASCII"):
+            AutopilotInput.model_validate({**self.base, "repo": repository})
+
     def test_round_trips_through_json(self) -> None:
         start = SpecToPrInput.model_validate(
             {**self.base, "approval": {"kind": "label", "labeled_at": "2026-10-25T12:00:00Z"}}

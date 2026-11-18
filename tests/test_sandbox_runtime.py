@@ -139,13 +139,13 @@ class FakeApi:
             raise SandboxNotFoundError("gone")
 
 
-def repo(*, egress: tuple[str, ...] | str = ()) -> RepoContext:
+def repo(*, base_branch: str = "main", egress: tuple[str, ...] | str = ()) -> RepoContext:
     return RepoContext(
         "acme",
         "widget",
         "acme/widget",
         7,
-        RepoConfig(base_branch="main", verify=("pytest",), egress=cast(tuple[str, ...], egress)),
+        RepoConfig(base_branch=base_branch, verify=("pytest",), egress=cast(tuple[str, ...], egress)),
     )
 
 
@@ -382,6 +382,31 @@ def test_allow_all_repo_remains_explicit() -> None:
     assert task_egress(context, ("api.anthropic.com",)) == NetworkPolicy(type="allow-all")
 
 
+@pytest.mark.asyncio
+async def test_resolve_base_head_preserves_slashes_in_git_ref_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = importlib.import_module("factory.sandbox.snapshot")
+    requested: list[str] = []
+
+    class Http:
+        async def json(self, method: str, path: str) -> object:
+            assert method == "GET"
+            requested.append(path)
+            return {"object": {"sha": "a" * 40}}
+
+    class GitHub:
+        http = Http()
+
+        async def aclose(self) -> None:
+            return None
+
+    def fake_github_for(_repo: RepoContext) -> GitHub:
+        return GitHub()
+
+    monkeypatch.setattr(module, "github_for", fake_github_for)
+    assert await module.resolve_base_head(repo(base_branch="release/2.x")) == "a" * 40
+    assert requested == ["/repos/acme/widget/git/ref/heads/release/2.x"]
+
+
 @pytest.mark.parametrize(
     "ref",
     [
@@ -415,6 +440,7 @@ def test_runner_bundle_is_deterministic_and_scoped(tmp_path: Path) -> None:
     (tmp_path / "factory" / "agents" / "a.py").write_text("A = 1\n")
     (tmp_path / "factory" / "schemas" / "s.py").write_text("S = 2\n")
     (tmp_path / "factory" / "sandbox" / "types.py").write_text("ROOT = '/opt/factory'\n")
+    (tmp_path / "factory" / "identifiers.py").write_text("SAFE = True\n")
     (tmp_path / "factory" / "secret.py").write_text("TOKEN = 'do not package'\n")
 
     first = build_runner_bundle(tmp_path)
@@ -430,6 +456,7 @@ def test_real_runner_bundle_imports_without_host_only_package_initializers(tmp_p
     archive.write_bytes(bundle.data)
     with zipfile.ZipFile(archive) as zipped:
         assert zipped.read("factory/agents/__init__.py") == b""
+        assert "factory/identifiers.py" in zipped.namelist()
         assert "factory/sandbox/types.py" in zipped.namelist()
     environment = {**os.environ, "PYTHONPATH": str(archive)}
     result = subprocess.run(

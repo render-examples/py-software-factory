@@ -13,8 +13,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from factory.identifiers import is_valid_repo_name
+
 ROOT = Path(__file__).resolve().parents[1]
-REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SANDBOX_GROUP_RE = re.compile(r"^sbg-[A-Za-z0-9]+$")
 
 
@@ -72,7 +73,7 @@ def require_values(environment: Mapping[str, str], names: Iterable[str]) -> list
 
 def validate_repository(value: str) -> str:
     value = value.strip()
-    if not REPO_RE.fullmatch(value):
+    if not is_valid_repo_name(value):
         raise ValueError("repository must be OWNER/NAME")
     return value
 

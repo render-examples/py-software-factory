@@ -38,6 +38,9 @@ def test_gateway_and_repository_validation() -> None:
         normalize_gateway_url("http://factory.example.com")
     with pytest.raises(ValueError, match="OWNER/NAME"):
         validate_repository("https://github.com/owner/repo")
+    for invalid in ("../repo", "owner/..", "ownér/repo"):
+        with pytest.raises(ValueError, match="OWNER/NAME"):
+            validate_repository(invalid)
 
 
 def test_manifest_pins_events_permissions_and_webhook() -> None:

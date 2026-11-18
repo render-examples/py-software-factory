@@ -45,6 +45,12 @@ def test_the_deployment_config_is_valid() -> None:
     assert factory_config.CONFIG.repos
 
 
+def test_accepts_a_safe_multisegment_base_branch() -> None:
+    raw = TEST_CONFIG.model_dump()
+    raw["repos"] = {"acme/web": {"base_branch": "release/2.x", "verify": ()}}
+    assert FactoryConfig.model_validate(raw).repos["acme/web"].base_branch == "release/2.x"
+
+
 def test_brokered_model_access_is_explicit_and_off_by_default() -> None:
     assert SandboxSettings().brokered_model_access is False
     assert SandboxSettings(brokered_model_access=True).brokered_model_access is True
@@ -60,6 +66,14 @@ def test_rejects_an_unsafe_base_branch_at_startup(branch: str) -> None:
     raw = TEST_CONFIG.model_dump()
     raw["repos"] = {"acme/web": {"base_branch": branch, "verify": ()}}
     with pytest.raises(ValidationError, match="safe Git branch"):
+        FactoryConfig.model_validate(raw)
+
+
+@pytest.mark.parametrize("repository", ["../repo", "./repo", "owner/..", "ownér/repo", "owner/repo/extra"])
+def test_rejects_unsafe_or_non_ascii_repository_names(repository: str) -> None:
+    raw = TEST_CONFIG.model_dump()
+    raw["repos"] = {repository: {"base_branch": "main", "verify": ()}}
+    with pytest.raises(ValidationError, match='key must be "owner/name"'):
         FactoryConfig.model_validate(raw)
 
 

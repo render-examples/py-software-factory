@@ -18,7 +18,8 @@ from factory.changeset.changes import (
 )
 from factory.config import RepoContext, get_config
 from factory.github import GitDataClient, GitHubError, GitIdentity, TreeEntry, git_data
-from factory.sandbox import APP_DIR, REPO_DIR, SAFE_REF, Sandbox, shq
+from factory.identifiers import is_safe_branch
+from factory.sandbox import APP_DIR, REPO_DIR, Sandbox, shq
 
 COLLECT_CHANGES_SCRIPT = f"{APP_DIR}/collect-changes.sh"
 """`bash collect-changes.sh <repo_dir> <base_sha> <out_file> <max_changed_files> <max_file_bytes>`; see the
@@ -196,15 +197,3 @@ async def _move_branch(git: GitDataClient, branch: str, commit_sha: str, base: s
             raise RuntimeError(f"refs/heads/{branch} points at {after}, expected {commit_sha}")
         return
     raise RuntimeError(f"refs/heads/{branch} kept changing while publishing")
-
-
-def is_safe_branch(branch: str) -> bool:
-    """A branch name git and GitHub both accept, with nothing that reads as a refspec, option, or revision."""
-    return (
-        SAFE_REF.fullmatch(branch) is not None
-        and len(branch) <= 200
-        and ".." not in branch
-        and "//" not in branch
-        and not branch.endswith(("/", ".", ".lock"))
-        and not any(s.startswith(".") for s in branch.split("/"))
-    )

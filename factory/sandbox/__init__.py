@@ -8,7 +8,7 @@ from factory.sandbox.client import (
 )
 from factory.sandbox.egress import builder_egress, egress_hint, task_egress
 from factory.sandbox.open import OpenedRenderSandbox, OpenSandboxDeps, open_sandbox, with_sandbox
-from factory.sandbox.shell import SAFE_REF, shq
+from factory.sandbox.shell import shq
 from factory.sandbox.snapshot import (
     BuiltSnapshot,
     RunnerBundle,
@@ -37,7 +37,6 @@ __all__ = [
     "APP_DIR",
     "REPO_DIR",
     "RUN_AS",
-    "SAFE_REF",
     "SANDBOX_ROOT",
     "SCRATCH_DIR",
     "ApiPacer",
