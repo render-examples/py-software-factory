@@ -49,7 +49,33 @@ FILE_WRITERS = frozenset(
 )
 WRAPPERS = frozenset({"env", "timeout", "nice", "xargs", "command", "exec", "time", "nohup"})
 SHELLS = frozenset({"sh", "bash", "zsh", "dash"})
-REDIRECT = re.compile(r"^(\d*|&)>>?(.*)$")
+REDIRECT = re.compile(r"^(\d*|&)(?:>\||>>?)(.*)$")
+WRAPPER_OPTIONS_WITH_VALUE = {
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
+    "timeout": frozenset({"-k", "--kill-after", "-s", "--signal"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "xargs": frozenset(
+        {
+            "-a",
+            "--arg-file",
+            "-E",
+            "--eof",
+            "-I",
+            "--replace",
+            "-L",
+            "--max-lines",
+            "-n",
+            "--max-args",
+            "-P",
+            "--max-procs",
+            "-s",
+            "--max-chars",
+        }
+    ),
+    "exec": frozenset({"-a"}),
+    "time": frozenset({"-f", "--format", "-o", "--output"}),
+}
+GIT_GLOBAL_OPTIONS_WITH_VALUE = frozenset({"-C", "--git-dir", "--work-tree", "--namespace"})
 
 
 def reject_reason(command: str, scratch_dir: str) -> str | None:
@@ -66,6 +92,53 @@ def _in_scratch(path: str, scratch_dir: str) -> bool:
     if path == "/dev/null" or path == scratch_dir or path.startswith(f"{scratch_dir}/"):
         return True
     return re.match(r"^(/tmp|\$\{?(TMPDIR|HOME)\}?|~)(/|$)", path) is not None
+
+
+def _skip_wrapper(words: list[str], index: int, wrapper: str, scratch_dir: str) -> tuple[int, str | None]:
+    index += 1
+    value_options = WRAPPER_OPTIONS_WITH_VALUE.get(wrapper, frozenset())
+    while index < len(words):
+        argument = words[index]
+        if argument == "--":
+            index += 1
+            break
+        option = next(
+            (
+                candidate
+                for candidate in value_options
+                if argument == candidate
+                or argument.startswith(f"{candidate}=")
+                or (candidate.startswith("-") and not candidate.startswith("--") and argument.startswith(candidate))
+            ),
+            None,
+        )
+        if option is not None:
+            attached = argument != option
+            if "=" in argument:
+                value = argument.split("=", 1)[1]
+            elif attached:
+                value = argument[len(option) :]
+            else:
+                value = ""
+            if not attached:
+                index += 1
+                if index >= len(words):
+                    return index, f"{wrapper} {option} requires a value"
+                value = words[index]
+            if wrapper == "time" and option in {"-o", "--output"} and not _in_scratch(value, scratch_dir):
+                return index, f"time output is only allowed in {scratch_dir}"
+            index += 1
+            continue
+        if argument.startswith("-"):
+            index += 1
+            continue
+        break
+    if wrapper == "timeout" and index < len(words) and re.fullmatch(r"\d+(?:\.\d+)?[smhd]?", words[index]):
+        index += 1
+    if wrapper == "env":
+        while index < len(words) and re.match(r"^[A-Za-z_]\w*=", words[index]):
+            index += 1
+    return index, None
 
 
 def _check_command(raw: list[str], scratch_dir: str) -> str | None:
@@ -88,12 +161,16 @@ def _check_command(raw: list[str], scratch_dir: str) -> str | None:
         index += 1
 
     index = 0
-    while index < len(words) and (
-        re.match(r"^[A-Za-z_]\w*=", words[index]) or PurePosixPath(words[index]).name in WRAPPERS
-    ):
-        index += 1
-        while index < len(words) and re.match(r"^(-|\d+[smhd]?$)", words[index]):
+    while index < len(words):
+        if re.match(r"^[A-Za-z_]\w*=", words[index]):
             index += 1
+            continue
+        wrapper = PurePosixPath(words[index]).name
+        if wrapper not in WRAPPERS:
+            break
+        index, reason = _skip_wrapper(words, index, wrapper, scratch_dir)
+        if reason:
+            return reason
     name = PurePosixPath(words[index]).name if index < len(words) else ""
     args = words[index + 1 :]
     if not name:
@@ -111,8 +188,19 @@ def _check_command(raw: list[str], scratch_dir: str) -> str | None:
         if any(arg == "-c" or arg.startswith(("--config-env", "--exec-path")) for arg in args):
             return "git config overrides are not allowed: they can run arbitrary commands"
         sub_index = 0
-        while sub_index < len(args) and args[sub_index].startswith("-"):
-            sub_index += 2 if args[sub_index] == "-C" else 1
+        while sub_index < len(args):
+            option = args[sub_index]
+            if option == "--":
+                sub_index += 1
+                break
+            option_name = option.split("=", 1)[0]
+            if option_name in GIT_GLOBAL_OPTIONS_WITH_VALUE:
+                sub_index += 1 if "=" in option else 2
+                continue
+            if option.startswith("-"):
+                sub_index += 1
+                continue
+            break
         subcommand = args[sub_index] if sub_index < len(args) else None
         if subcommand and subcommand not in READ_ONLY_GIT:
             return f"git {subcommand} is not allowed: this agent is read-only"
@@ -192,7 +280,8 @@ def _split_commands(line: str) -> list[list[str]]:
         elif char.isspace() and char != "\n":
             end_word()
         elif char in ";&|()\n" and not (
-            char == "&" and (line[index + 1 : index + 2] == ">" or line[index - 1 : index] == ">")
+            (char == "&" and line[index + 1 : index + 2] == ">")
+            or (char in {"&", "|"} and line[index - 1 : index] == ">")
         ):
             end_command()
         else:

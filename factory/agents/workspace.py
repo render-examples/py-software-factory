@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import posixpath
 from collections.abc import Mapping, Sequence
@@ -40,14 +41,26 @@ class SandboxWorkspaceBackend:
         if env:
             assignments = " ".join(f"{key}={shq(value)}" for key, value in sorted(env.items()))
             text = f"env {assignments} {text}"
-        result = await self.sandbox.exec(text, timeout_seconds=timeout)
+        result = await self.sandbox.exec(text, timeout_seconds=timeout, as_runner=True)
         return CommandResult(exit_code=result.exit_code, stdout=result.stdout, stderr=result.stderr)
 
     async def read_bytes(self, path: str) -> bytes:
-        return await self.sandbox.download(_remote_path(path))
+        result = await self.sandbox.exec(
+            f"python3 -I -c {shq(_READ_SCRIPT)} {shq(_remote_path(path))}",
+            timeout_seconds=30,
+            as_runner=True,
+        )
+        _check(result.exit_code, result.stderr)
+        return base64.b64decode(result.stdout)
 
     async def write_bytes(self, path: str, data: bytes) -> None:
-        await self.sandbox.upload(_remote_path(path), data)
+        encoded = base64.b64encode(data).decode()
+        result = await self.sandbox.exec(
+            f"python3 -I -c {shq(_WRITE_SCRIPT)} {shq(_remote_path(path))} {shq(encoded)}",
+            timeout_seconds=30,
+            as_runner=True,
+        )
+        _check(result.exit_code, result.stderr)
 
     async def list_dir(self, path: str) -> Sequence[FileEntry]:
         remote = _remote_path(path)
@@ -59,7 +72,7 @@ class SandboxWorkspaceBackend:
         )
         result = await self.sandbox.exec(
             f"python3 -I -c {shq(script)} {shq(remote)}",
-            timeout_seconds=60,
+            timeout_seconds=30,
             as_runner=True,
         )
         _check(result.exit_code, result.stderr)
@@ -92,7 +105,7 @@ class SandboxWorkspaceBackend:
         )
         result = await self.sandbox.exec(
             f"python3 -I -c {shq(script)} {shq(remote)}",
-            timeout_seconds=60,
+            timeout_seconds=30,
             as_runner=True,
         )
         _check(result.exit_code, result.stderr)
@@ -113,15 +126,19 @@ class SandboxWorkspaceBackend:
         return result.exit_code == 0
 
     async def make_dir(self, path: str) -> None:
-        result = await self.sandbox.exec(f"mkdir -p -- {shq(_remote_path(path))}", timeout_seconds=60, as_runner=True)
+        result = await self.sandbox.exec(f"mkdir -p -- {shq(_remote_path(path))}", timeout_seconds=30, as_runner=True)
         _check(result.exit_code, result.stderr)
 
     async def remove(self, path: str) -> None:
-        result = await self.sandbox.exec(f"rm -rf -- {shq(_remote_path(path))}", timeout_seconds=60, as_runner=True)
+        result = await self.sandbox.exec(f"rm -rf -- {shq(_remote_path(path))}", timeout_seconds=30, as_runner=True)
         _check(result.exit_code, result.stderr)
 
     async def realpath(self, path: str) -> str:
-        result = await self.sandbox.exec(f"realpath -- {shq(_remote_path(path))}", timeout_seconds=30, as_runner=True)
+        result = await self.sandbox.exec(
+            f"realpath -m -- {shq(_remote_path(path))}",
+            timeout_seconds=30,
+            as_runner=True,
+        )
         _check(result.exit_code, result.stderr)
         resolved = result.stdout.strip()
         _remote_path(resolved)
@@ -139,3 +156,13 @@ def _remote_path(path: str) -> str:
 def _check(exit_code: int, stderr: str) -> None:
     if exit_code != 0:
         raise OSError(stderr.strip() or f"sandbox command exited {exit_code}")
+
+
+_READ_SCRIPT = (
+    "import base64,pathlib,sys;sys.stdout.write(base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode())"
+)
+_WRITE_SCRIPT = (
+    "import base64,pathlib,sys;"
+    "p=pathlib.Path(sys.argv[1]);p.parent.mkdir(parents=True,exist_ok=True);"
+    "p.write_bytes(base64.b64decode(sys.argv[2]))"
+)

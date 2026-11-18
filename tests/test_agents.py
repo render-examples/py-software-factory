@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,15 +11,23 @@ from pydantic_ai import ModelRetry
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.anthropic import AnthropicModelName
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai.workspaces import LocalWorkspaceBackend
+from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
 
 from factory.agents.registry import AGENTS, PR_REVIEWER, TRIAGE
 from factory.agents.run import UploadedSandboxRunner, run_agent
 from factory.agents.shell_policy import reject_reason
-from factory.agents.tools import AgentDeps, bash
+from factory.agents.tools import AgentDeps, _shell_env, bash, edit, ls, read, write
 from factory.agents.workspace import SandboxWorkspaceBackend
 from factory.runner.protocol import ResultEvent, RunnerInput
-from factory.sandbox.types import ExecResult, Sandbox
+from factory.sandbox.types import (
+    APP_DIR,
+    REPO_DIR,
+    RUNNER_HOME,
+    RUNNER_PATH,
+    RUNNER_TMP,
+    ExecResult,
+    Sandbox,
+)
 
 
 class FakeSandbox:
@@ -116,6 +125,34 @@ def test_registry_pins_tool_authority_and_placement() -> None:
     assert reject_reason("git status", "/tmp/factory") is None
     assert reject_reason("git commit -am nope", "/tmp/factory") is not None
     assert reject_reason("curl https://example.com", "/tmp/factory") is not None
+
+
+@pytest.mark.parametrize(
+    ("command", "reason"),
+    [
+        ("env -u FOO rm -rf .", "rm"),
+        ("xargs -I {} curl https://example.com", "curl"),
+        ("git --git-dir .git clean -fd", "git clean"),
+        ("git --work-tree . reset --hard", "git reset"),
+        ("echo hi >|tracked.txt", "redirecting output"),
+        ("time -o report.txt echo hi", "time output"),
+    ],
+)
+def test_read_only_shell_policy_rejects_wrapper_and_redirect_bypasses(command: str, reason: str) -> None:
+    assert reason in (reject_reason(command, "/opt/factory/scratch") or "")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env -u FOO git status",
+        "xargs -I {} git status",
+        "git --git-dir .git --work-tree . status",
+        "echo hi >|/tmp/report.txt",
+    ],
+)
+def test_read_only_shell_policy_keeps_safe_wrapped_commands(command: str) -> None:
+    assert reject_reason(command, "/opt/factory/scratch") is None
 
 
 def test_registry_uses_explicit_supported_anthropic_models() -> None:
@@ -220,3 +257,57 @@ async def test_paced_workspace_rejects_paths_outside_the_repository() -> None:
         await workspace.read_bytes("../secret")
     with pytest.raises(ValueError, match="escapes"):
         await workspace.write_bytes("/etc/passwd", b"x")
+
+
+async def test_sandbox_workspace_operations_always_run_as_runner() -> None:
+    class RecordingSandbox(FakeSandbox):
+        def __init__(self) -> None:
+            super().__init__()
+            self.runner_flags: list[bool] = []
+
+        async def exec(
+            self, command: str, *, timeout_seconds: float | None = None, as_runner: bool = False
+        ) -> ExecResult:
+            del timeout_seconds
+            self.commands.append(command)
+            self.runner_flags.append(as_runner)
+            stdout = base64.b64encode(b"hello").decode() if "b64encode" in command else ""
+            return ExecResult(0, stdout, "")
+
+    sandbox = RecordingSandbox()
+    workspace = SandboxWorkspaceBackend(sandbox)
+    assert await workspace.read_bytes(f"{REPO_DIR}/file.txt") == b"hello"
+    await workspace.write_bytes(f"{REPO_DIR}/file.txt", b"changed")
+    await workspace.run(["git", "status"], timeout=30)
+    assert sandbox.runner_flags == [True, True, True]
+
+
+async def test_file_tools_share_workspace_operations_and_reject_escape_paths(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("secret")
+    (tmp_path / "notes.txt").write_text("before")
+    (tmp_path / "outside-link").symlink_to(outside)
+
+    class Context:
+        deps = AgentDeps(read_only=False)
+        workspace = Workspace(LocalWorkspaceBackend(tmp_path))
+
+    ctx = cast(Any, Context())
+    assert await read(ctx, "notes.txt") == "before"
+    assert "notes.txt" in await ls(ctx)
+    assert await edit(ctx, "notes.txt", "before", "after") == "edited notes.txt"
+    assert await write(ctx, "nested/new.txt", "new") == "wrote nested/new.txt"
+    assert (tmp_path / "notes.txt").read_text() == "after"
+    assert (tmp_path / "nested/new.txt").read_text() == "new"
+
+    for path in ("../outside.txt", str(outside), "outside-link"):
+        with pytest.raises(ModelRetry, match="escapes"):
+            await read(ctx, path)
+
+
+def test_shell_environment_matches_as_runner_layout() -> None:
+    environment = _shell_env()
+    assert environment["HOME"] == RUNNER_HOME
+    assert environment["TMPDIR"] == RUNNER_TMP
+    assert environment["PATH"] == RUNNER_PATH
+    assert environment["GIT_CONFIG_GLOBAL"] == f"{APP_DIR}/gitconfig"

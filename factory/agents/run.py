@@ -144,7 +144,7 @@ async def _run_in_task(
 ) -> tuple[BaseModel, dict[str, Any]]:
     workspace = workspace_factory(sandbox) if workspace_factory else SandboxWorkspaceBackend(sandbox)
     built = definition.build(model=model)
-    deps = AgentDeps(read_only="edit" not in definition.tools and "write" not in definition.tools, as_runner=True)
+    deps = AgentDeps(read_only="edit" not in definition.tools and "write" not in definition.tools)
     result = await built.run(
         message,
         deps=deps,

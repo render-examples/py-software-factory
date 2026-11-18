@@ -6,7 +6,8 @@ set -euo pipefail
 
 # shellcheck source=/dev/null
 . "$(dirname "${BASH_SOURCE[0]}")/env"
-home="$FACTORY_SCRATCH_DIR/home" tmp="$FACTORY_SCRATCH_DIR/tmp"
+home="${FACTORY_RUNNER_HOME:-$FACTORY_SCRATCH_DIR/home}"
+tmp="${FACTORY_RUNNER_TMP:-$FACTORY_SCRATCH_DIR/tmp}"
 mkdir -p "$home" "$tmp"
 drop=false
 if [ "$(id -u)" = 0 ] && [ "$FACTORY_RUN_AS" != root ]; then

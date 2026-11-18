@@ -15,6 +15,11 @@ SCRATCH_DIR: Final = f"{SANDBOX_ROOT}/scratch"
 """Scratch space for the runner user (HOME and TMPDIR)."""
 RUN_AS: Final = "factory"
 """Unprivileged user agents and repository code run as."""
+RUNNER_HOME: Final = f"{SCRATCH_DIR}/home"
+RUNNER_TMP: Final = f"{SCRATCH_DIR}/tmp"  # noqa: S108 - isolated inside the sandbox
+RUNNER_PATH: Final = (
+    f"{SANDBOX_ROOT}/venv/bin:{SANDBOX_ROOT}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
 
 
 @dataclass(frozen=True)

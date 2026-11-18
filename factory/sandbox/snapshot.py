@@ -26,7 +26,17 @@ from factory.sandbox.client import PacedSandboxClient, RenderSandbox
 from factory.sandbox.egress import builder_egress, egress_hint
 from factory.sandbox.operations import checked, configured_group_id, require_success
 from factory.sandbox.shell import SAFE_REF, shq
-from factory.sandbox.types import APP_DIR, REPO_DIR, RUN_AS, SANDBOX_ROOT, SCRATCH_DIR, SnapshotManifest
+from factory.sandbox.types import (
+    APP_DIR,
+    REPO_DIR,
+    RUN_AS,
+    RUNNER_HOME,
+    RUNNER_PATH,
+    RUNNER_TMP,
+    SANDBOX_ROOT,
+    SCRATCH_DIR,
+    SnapshotManifest,
+)
 
 SHA1_RE: Final = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
@@ -387,8 +397,9 @@ def _env_file() -> bytes:
         f"FACTORY_SCRATCH_DIR={SCRATCH_DIR}",
         f"FACTORY_RUN_AS={RUN_AS}",
         f"FACTORY_PYTHON={SANDBOX_ROOT}/venv/bin/python",
-        f"FACTORY_PATH={SANDBOX_ROOT}/venv/bin:{SANDBOX_ROOT}/bin:"
-        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        f"FACTORY_PATH={RUNNER_PATH}",
+        f"FACTORY_RUNNER_HOME={RUNNER_HOME}",
+        f"FACTORY_RUNNER_TMP={RUNNER_TMP}",
     )
     return ("\n".join(f"export {value}" for value in values) + "\n").encode()
 
