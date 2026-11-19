@@ -13,8 +13,19 @@ from render import Render
 from factory.config import get_config
 from factory.sandbox.credentials import ANTHROPIC_CREDENTIAL, credential_matches, list_credentials
 from scripts.common import Check, load_environment, normalize_gateway_url, print_checks
+from scripts.database import database_checks
 from scripts.preflight import local_checks
 from scripts.setup_github import validate_or_apply
+from scripts.setup_render import WORKFLOWS_GROUP, GeneratedRenderApi, RenderEnvApi
+
+LINK_DATABASE_HINT = (
+    f"run `uv run setup-render --link-database --apply`, then redeploy {WORKFLOWS_GROUP} "
+    "(see docs/configuration.md#database)"
+)
+LOCAL_DATABASE_HINT = (
+    "locally, use factory-db's external URL with ?sslmode=verify-full&sslrootcert=system "
+    "and allow your IP on factory-db"
+)
 
 
 async def _gateway_checks(url: str) -> list[Check]:
@@ -42,6 +53,33 @@ def _render_group_check(environment: dict[str, str]) -> Check:
     except Exception as error:
         return Check("sandbox group", False, str(error))
     return Check("sandbox group", group.id == group_id, f"{group.name} ({group.region})")
+
+
+def _database_section(environment: dict[str, str]) -> list[Check]:
+    checks = database_checks(environment)
+    return [
+        Check(check.name, check.ok, f"{check.detail}; {LOCAL_DATABASE_HINT}", check.required)
+        if check.name == "database connects" and not check.ok
+        else check
+        for check in checks
+    ]
+
+
+def _workflows_database_check(environment: dict[str, str], api: RenderEnvApi | None = None) -> Check:
+    """Confirm the workflows group holds DATABASE_URL by name; its value is never read into output."""
+    name = "workflows DATABASE_URL"
+    try:
+        if api is None:
+            api = GeneratedRenderApi.from_environment(environment)
+        group_id = api.env_group_id(WORKFLOWS_GROUP)
+        if group_id is None:
+            return Check(name, False, f"env group {WORKFLOWS_GROUP} not found; apply the Blueprint first")
+        keys = api.env_group_keys(group_id)
+    except Exception as error:
+        return Check(name, False, str(error))
+    if "DATABASE_URL" not in keys:
+        return Check(name, False, f"missing from env group {WORKFLOWS_GROUP}; {LINK_DATABASE_HINT}")
+    return Check(name, True, f"set in env group {WORKFLOWS_GROUP}")
 
 
 async def _credential_check(environment: dict[str, str]) -> Check:
@@ -115,7 +153,11 @@ async def _broker_probe(repository: str, installation_id: int) -> Check:
 
 
 async def _remote_checks(args: argparse.Namespace, environment: dict[str, str]) -> list[Check]:
-    checks = [_render_group_check(environment), await _credential_check(environment)]
+    checks = [
+        _render_group_check(environment),
+        _workflows_database_check(environment),
+        await _credential_check(environment),
+    ]
     if args.gateway_url:
         try:
             gateway_url = normalize_gateway_url(args.gateway_url)
@@ -167,7 +209,8 @@ def main(argv: list[str] | None = None) -> int:
             json_output=args.json_output,
         )
     environment = load_environment(args.env_file)
-    checks = local_checks(environment, require_secrets=args.remote)
+    checks = local_checks(environment, require_secrets=args.remote, database=False)
+    checks.extend(_database_section(environment))
     if args.remote:
         os.environ.update(environment)
         checks.extend(asyncio.run(_remote_checks(args, environment)))

@@ -8,8 +8,8 @@ from render.client.errors import ClientError
 from render.experimental.sandbox.errors import SandboxNotFoundError
 from render.workflows.context import TaskRunMetadata
 
-from factory.claims import RunNotFoundError, task_identity
-from factory.claims.run_control import RenderRunControl
+from factory.runs import RunNotFoundError, task_identity
+from factory.runs.run_control import RenderRunControl
 from factory.sandbox.client import ApiPacer, PacedSandboxClient, SandboxApi
 
 

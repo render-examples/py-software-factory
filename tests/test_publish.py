@@ -521,6 +521,16 @@ class TestBranches:
         assert harness.gh.refs["factory/issue-7"] == foreign
         assert not any(method == "PATCH" for method, _, _ in harness.gh.calls)
 
+    async def test_moves_no_branch_once_the_run_no_longer_owns_its_thread(self, harness: Harness) -> None:
+        write(harness.root, "new.txt", "x\n")
+
+        async def superseded() -> None:
+            raise LookupError("a newer run took over")
+
+        with pytest.raises(LookupError, match="newer run"):
+            await harness.run(assert_owned=superseded)
+        assert harness.gh.refs == {}
+
     async def test_is_idempotent_on_retry_with_a_fixed_commit_date(self, harness: Harness) -> None:
         write(harness.root, "new.txt", "x\n")
         first = await harness.run()

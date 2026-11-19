@@ -1,7 +1,7 @@
 """Plain stage functions shared by the single-stage tasks and the Autopilot parent task."""
 
 from factory.stages.approval import ApprovedSpec, load_approved_spec
-from factory.stages.cancel import CancelResult, cancel_stage
+from factory.stages.cancel import cancel_outcome
 from factory.stages.diff_lines import commentable, parse_diff_lines, patch_lines, pull_diff_lines
 from factory.stages.pr_review import PrReviewDeps, pr_review_stage
 from factory.stages.refresh_snapshot import SnapshotResult, refresh_snapshot_stage
@@ -13,7 +13,6 @@ from factory.stages.verify import VerifyRun, all_passed, failure_report, failure
 
 __all__ = [
     "ApprovedSpec",
-    "CancelResult",
     "PrReviewDeps",
     "SnapshotResult",
     "SpecToPrDeps",
@@ -23,7 +22,7 @@ __all__ = [
     "TriageHandoff",
     "VerifyRun",
     "all_passed",
-    "cancel_stage",
+    "cancel_outcome",
     "commentable",
     "draft_spec",
     "failure_report",

@@ -1,4 +1,5 @@
-"""Autopilot parent task composing the three registered child tasks."""
+"""Autopilot parent task: Triage and Spec-to-PR as child tasks, then PR Reviewer as its own run on the pull
+request."""
 
 from __future__ import annotations
 
@@ -6,13 +7,21 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict, cast
 
+from render import RenderAsync
 from render.workflows import TaskDefinition
 
-from factory.claims import Claim, Outcome, Subject, TaskResult
-from factory.config import Tasks, get_config
+from factory.config import Tasks, get_config, require_env
+from factory.events import warn
+from factory.runs import Outcome, Run, TaskResult
 from factory.schemas import AutopilotInput
-from factory.workflows.github_task import GitHubTaskSpec, TaskContext, define_github_task, parse_task_result
-from factory.workflows.pr_review import pr_review_task
+from factory.threads import GitHubThread
+from factory.workflows.github_task import (
+    GitHubTaskSpec,
+    TaskContext,
+    Trigger,
+    define_github_task,
+    parse_task_result,
+)
 from factory.workflows.spec_to_pr import spec_to_pr_task
 from factory.workflows.triage import triage_task
 
@@ -31,15 +40,24 @@ class AutopilotData(TypedDict):
 
 ChildTask = TaskDefinition[..., dict[str, Any]]
 ChildRunner = Callable[[ChildTask, dict[str, Any]], Awaitable[dict[str, Any]]]
+StartTask = Callable[[str, dict[str, Any], str], Awaitable[str]]
+"""Starts a registered task as a new root run with an idempotency key, and returns its run ID."""
+
+
+async def start_task(task: str, task_input: dict[str, Any], idempotency_key: str) -> str:
+    """Reads RENDER_API_KEY and RENDER_WORKFLOW_SLUG."""
+    slug = f"{require_env('RENDER_WORKFLOW_SLUG')}/{task}"
+    return (await RenderAsync().workflows.start_task(slug, [task_input], idempotency_key=idempotency_key)).id
 
 
 @dataclass(frozen=True)
 class AutopilotDeps:
     run_child: ChildRunner | None = None
+    start_task: StartTask = start_task
 
 
 async def autopilot_stage(
-    claim: Claim,
+    run: Run,
     task_input: AutopilotInput,
     ctx: TaskContext,
     deps: AutopilotDeps = AutopilotDeps(),
@@ -77,8 +95,7 @@ async def autopilot_stage(
         "installation_id": task_input.installation_id,
         "actor": task_input.actor,
     }
-    await claim.gh.remove_label(task_input.issue, get_config().labels.autopilot)
-    await claim.report_progress("running Triage")
+    await run.report_progress("running Triage")
     triage = record(
         "triage",
         await child(
@@ -87,14 +104,12 @@ async def autopilot_stage(
         ),
     )
     triage_data = _json_object(triage.data)
-    if triage.state == "done" and triage.outcome == "asked":
-        await claim.assert_current()
-        await claim.gh.add_labels(task_input.issue, [get_config().labels.autopilot])
-        return finish("waiting_for_answers", triage.summary)
+    if triage.state == "done" and triage.outcome in {"asked", "skipped"}:
+        return Outcome("waiting_for_answers", triage.summary, data={"stages": stages}, waiting="reply")
     if triage.state != "done" or triage_data is None or triage_data.get("kind") != "spec":
         return stop("triage", triage)
 
-    await claim.report_progress("implementing the spec")
+    await run.report_progress("implementing the spec")
     spec_to_pr = record(
         "spec-to-pr",
         await child(
@@ -115,22 +130,20 @@ async def autopilot_stage(
     if spec_to_pr.state != "done" or pr_data is None or pr_data.get("kind") != "pull_request":
         return stop("spec-to-pr", spec_to_pr)
 
-    await claim.report_progress("reviewing the draft pull request")
-    review = record(
-        "pr-review",
-        await child(
-            pr_review_task,
-            {
-                **base,
-                "pr": pr_data["pr"],
-                "head_sha": pr_data["head_sha"],
-                "autopilot_issue": task_input.issue,
-            },
-        ),
-    )
-    if review.state != "done" or review.outcome not in {"reviewed", "already_reviewed"}:
-        return stop("pr-review", review)
-    return finish("completed", f"opened and reviewed draft PR #{pr_data['pr']}.")
+    pr, head_sha = pr_data["pr"], pr_data["head_sha"]
+    await run.assert_current()
+    try:
+        await deps.start_task(
+            Tasks.PR_REVIEW, {**base, "pr": pr, "head_sha": head_sha}, f"{run.trace_id}:pr-review:{head_sha}"
+        )
+    except Exception as error:
+        warn("could not start PR Reviewer", pr=pr, error=str(error))
+        label = get_config().labels.pr_review
+        summary = (
+            f"opened draft PR #{pr}, but PR Reviewer couldn't start. Apply `{label}` to the pull request to review it."
+        )
+        return finish("review_not_started", summary, "failed")
+    return finish("pr_opened", f"opened draft PR #{pr}; PR Reviewer is reviewing it on the pull request.")
 
 
 autopilot = define_github_task(
@@ -138,10 +151,14 @@ autopilot = define_github_task(
         name=Tasks.AUTOPILOT,
         title="Autopilot",
         input_type=AutopilotInput,
-        subject=lambda task_input, _child: Subject("issue", task_input.issue),
+        thread=lambda task_input: GitHubThread("issue", task_input.issue),
+        reply_to=lambda task_input: task_input.reply_to,
+        trigger=lambda task_input: (
+            Trigger(get_config().labels.autopilot, task_input.issue) if task_input.comment_id is None else None
+        ),
         timeout_seconds=8 * 60 * 60,
     ),
-    lambda claim, task_input, ctx: autopilot_stage(claim, task_input, ctx),
+    lambda run, task_input, ctx: autopilot_stage(run, task_input, ctx),
 )
 
 autopilot_task = autopilot.task

@@ -11,9 +11,9 @@ from dataclasses import dataclass
 
 from factory.agents.definition import AgentDefinition, Placement
 from factory.agents.providers import model_hosts
-from factory.claims import Claim
 from factory.config import RepoContext, get_config
 from factory.github import PullRequest
+from factory.runs import Run
 from factory.sandbox import OpenedRenderSandbox, Sandbox
 from factory.stages import PrReviewDeps, SpecToPrDeps, TriageDeps
 from factory.stages.refresh_snapshot import Snapshot
@@ -21,9 +21,9 @@ from factory.stages.refresh_snapshot import Snapshot
 
 @dataclass(frozen=True)
 class WorkflowServices:
-    triage: Callable[[Claim], TriageDeps]
-    spec_to_pr: Callable[[Claim], SpecToPrDeps]
-    pr_review: Callable[[Claim], PrReviewDeps]
+    triage: Callable[[Run], TriageDeps]
+    spec_to_pr: Callable[[Run], SpecToPrDeps]
+    pr_review: Callable[[Run], PrReviewDeps]
     build_snapshot: Callable[[RepoContext, str], Awaitable[Snapshot]]
 
 
@@ -58,8 +58,11 @@ def model_egress(definition: AgentDefinition, brokered_model_access: bool) -> tu
 
 def _production_services() -> WorkflowServices:
     """Import evolving agent/sandbox APIs only when a task actually starts."""
-    from typing import cast
+    from typing import Any, cast
 
+    from pydantic import BaseModel
+
+    from factory.agent_runs.record import run_recorded
     from factory.agents import run_agent
     from factory.agents.registry import IMPLEMENTER, PR_REVIEWER, SPEC_WRITER, TRIAGE
     from factory.changeset import publish
@@ -69,32 +72,40 @@ def _production_services() -> WorkflowServices:
 
     brokered_model_access = get_config().sandbox.brokered_model_access
 
-    def triage(claim: Claim) -> TriageDeps:
+    async def recorded(
+        run: Run, definition: AgentDefinition, message: str, sandbox: Sandbox, **options: Any
+    ) -> BaseModel:
+        placement = effective_placement(definition, brokered_model_access)
+        return await run_recorded(
+            run,
+            agent_id=definition.id,
+            model=definition.model,
+            placement=placement,
+            call=lambda on_event: run_agent(
+                definition,
+                message,
+                event_ids=run.event_ids,
+                sandbox=sandbox,
+                placement=placement,
+                on_event=on_event,
+                **options,
+            ),
+        )
+
+    def triage(run: Run) -> TriageDeps:
         async def open_for_branch(repo: RepoContext, branch: str) -> OpenedRenderSandbox:
             return await open_sandbox(repo, BranchRef(branch))
 
         async def run_triage(message: str, sandbox: Sandbox) -> TriageDecision:
-            output = await run_agent(
-                TRIAGE,
-                message,
-                event_ids=claim.event_ids,
-                sandbox=sandbox,
-            )
-            return cast(TriageDecision, output)
+            return cast(TriageDecision, await recorded(run, TRIAGE, message, sandbox))
 
         async def run_writer(message: str, sandbox: Sandbox) -> SpecDraft:
-            output = await run_agent(
-                SPEC_WRITER,
-                message,
-                event_ids=claim.event_ids,
-                sandbox=sandbox,
-            )
-            return cast(SpecDraft, output)
+            return cast(SpecDraft, await recorded(run, SPEC_WRITER, message, sandbox))
 
         return TriageDeps(open_for_branch, run_triage, run_writer)
 
-    def spec_to_pr(claim: Claim) -> SpecToPrDeps:
-        git = git_data(claim.repo)
+    def spec_to_pr(run: Run) -> SpecToPrDeps:
+        git = git_data(run.repo)
 
         async def open_for_branch(repo: RepoContext, branch: str) -> OpenedRenderSandbox:
             return await open_sandbox(
@@ -104,19 +115,12 @@ def _production_services() -> WorkflowServices:
             )
 
         async def implement(message: str, sandbox: Sandbox) -> Implementation:
-            output = await run_agent(
-                IMPLEMENTER,
-                message,
-                event_ids=claim.event_ids,
-                sandbox=sandbox,
-                placement=effective_placement(IMPLEMENTER, brokered_model_access),
-                timeout_seconds=60 * 60,
-            )
+            output = await recorded(run, IMPLEMENTER, message, sandbox, timeout_seconds=60 * 60)
             return cast(Implementation, output)
 
         return SpecToPrDeps(open_for_branch, implement, publish, git, close_git=True)
 
-    def pr_review(claim: Claim) -> PrReviewDeps:
+    def pr_review(run: Run) -> PrReviewDeps:
         async def open_for_pull(repo: RepoContext, pull: PullRequest) -> OpenedRenderSandbox:
             return await open_sandbox(
                 repo,
@@ -129,14 +133,7 @@ def _production_services() -> WorkflowServices:
             )
 
         async def review(message: str, sandbox: Sandbox) -> Review:
-            output = await run_agent(
-                PR_REVIEWER,
-                message,
-                event_ids=claim.event_ids,
-                sandbox=sandbox,
-                placement=effective_placement(PR_REVIEWER, brokered_model_access),
-            )
-            return cast(Review, output)
+            return cast(Review, await recorded(run, PR_REVIEWER, message, sandbox))
 
         return PrReviewDeps(open_for_pull, review)
 

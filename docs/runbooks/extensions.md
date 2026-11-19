@@ -37,6 +37,13 @@ Add its model string, key variable, exact API hostname, and broker method/path r
 Update the Workflow environment-group documentation for in-task use and the sandbox-group credential setup for
 in-sandbox use. Never use wildcard model hosts when an exact host is available.
 
+## Change the event log
+
+Define new event types with `define_event` in the part of the code that first records them. Schema changes are new
+numbered files in `factory/db/migrations/`; never edit a migration that has been deployed. The services apply
+pending migrations themselves, and `doctor` reports any that are pending. If a projection change alters derived
+rows, run `uv run db-rebuild` after deploying it (see [Database](../configuration.md#database)).
+
 ## Add a repository
 
 Add an exact `OWNER/NAME` key in `factory_config.py`, including base branch, install/verify commands, and the

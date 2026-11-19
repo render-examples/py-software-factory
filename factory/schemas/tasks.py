@@ -27,16 +27,23 @@ class RepoInput(TaskInput):
         return value
 
 
+ReplyTo = Annotated[str, Field(min_length=1, max_length=200)]
+
+
 class TriageInput(RepoInput):
     issue: PositiveInt
     comment_id: PositiveInt | None = None
     """Set when a human reply started this round."""
+    reply_to: ReplyTo | None = None
+    """The waiting run the reply answers. The run resumes only while that run is still the issue's latest."""
 
 
 class AutopilotInput(RepoInput):
     issue: PositiveInt
     comment_id: PositiveInt | None = None
     """Set when a human reply restarted an autopilot run that had asked questions."""
+    reply_to: ReplyTo | None = None
+    """The waiting run the reply answers. The run resumes only while that run is still the issue's latest."""
 
 
 class LabelApproval(TaskInput):
@@ -64,8 +71,6 @@ class SpecToPrInput(RepoInput):
 class PrReviewInput(RepoInput):
     pr: PositiveInt
     head_sha: Sha
-    autopilot_issue: PositiveInt | None = None
-    """Keeps an autopilot review under the issue-level root claim."""
 
 
 class CancelInput(RepoInput):

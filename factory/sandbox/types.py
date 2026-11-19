@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final, Protocol
+from typing import Final, Protocol, runtime_checkable
 
 SANDBOX_ROOT: Final = "/opt/factory"
 """The snapshot build creates these paths; restored sandboxes find them in place."""
@@ -75,6 +76,25 @@ class Sandbox(Protocol):
 
     async def close(self) -> None:
         """Idempotent: a sandbox that no longer exists counts as closed."""
+        ...
+
+
+@runtime_checkable
+class FollowingSandbox(Sandbox, Protocol):
+    """A sandbox that can follow a file a long command writes, within its existing status polls."""
+
+    async def exec_following(
+        self,
+        command: str,
+        *,
+        timeout_seconds: float,
+        follow_path: str,
+        offset: Callable[[], int],
+        on_output: Callable[[bytes], None],
+        as_runner: bool = False,
+    ) -> ExecResult:
+        """Run a command detached, and on each poll pass `on_output` the bytes of `follow_path` from
+        `offset()` on, at most 256 KB at a time. Each call starts again at `offset()`."""
         ...
 
 

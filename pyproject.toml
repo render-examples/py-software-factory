@@ -17,6 +17,8 @@ dependencies = [
     "render==1.8.0",
     "truststore==0.10.5",
     "uvicorn>=0.54",
+    "psycopg[binary,pool]>=3.3",
+    "sse-starlette>=3.7",
 ]
 
 [project.scripts]
@@ -25,6 +27,7 @@ setup-render = "scripts.setup_render:main"
 setup-github = "scripts.setup_github:main"
 preflight = "scripts.preflight:main"
 doctor = "scripts.doctor:main"
+db-rebuild = "scripts.db_rebuild:main"
 
 [dependency-groups]
 runner = [
@@ -62,6 +65,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# Queries join module-level column lists; every value is a bound parameter.
+"factory/db/**" = ["S608"]
 # Tests drive local git and files from async fakes.
 "tests/**" = ["S105", "S106", "S108", "S311", "ASYNC221", "ASYNC240"]
 
@@ -76,3 +81,4 @@ reportPrivateUsage = false
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = ["postgres: needs TEST_DATABASE_URL; skipped without it"]

@@ -1,4 +1,5 @@
-"""Local deployment preflight. This command never calls Render or GitHub."""
+"""Local deployment preflight. This command never calls Render or GitHub; it connects to Postgres only when
+DATABASE_URL is set."""
 
 from __future__ import annotations
 
@@ -11,8 +12,9 @@ from typing import cast
 import yaml
 
 from scripts.common import ROOT, Check, command_check, load_environment, print_checks, require_values
+from scripts.database import database_checks
 
-GATEWAY_ENV = ("RENDER_API_KEY", "GITHUB_WEBHOOK_SECRET")
+GATEWAY_ENV = ("RENDER_API_KEY", "GITHUB_WEBHOOK_SECRET", "DATABASE_URL", "EVENTS_READ_TOKEN")
 WORKFLOW_ENV = (
     "RENDER_API_KEY",
     "RENDER_WORKSPACE_ID",
@@ -20,7 +22,10 @@ WORKFLOW_ENV = (
     "GITHUB_APP_PRIVATE_KEY",
     "ANTHROPIC_API_KEY",
     "FACTORY_SANDBOX_GROUP_ID",
+    "DATABASE_URL",
 )
+DATABASE_NAME = "factory-db"
+FREE_PLANS = {"free"}
 
 
 def blueprint_checks(text: str) -> list[Check]:
@@ -36,16 +41,59 @@ def blueprint_checks(text: str) -> list[Check]:
     service_values = cast(list[object], raw_services) if isinstance(raw_services, list) else []
     services = [cast(dict[str, object], service) for service in service_values if isinstance(service, dict)]
     service_types = [service.get("type") for service in services]
-    workflow = next(
-        (service for service in services if service.get("type") == "workflow"),
+    empty: dict[str, object] = {}
+    gateway = next((service for service in services if service.get("type") == "web"), empty)
+    workflow = next((service for service in services if service.get("type") == "workflow"), empty)
+    raw_databases = document.get("databases")
+    database_values = cast(list[object], raw_databases) if isinstance(raw_databases, list) else []
+    database = next(
+        (
+            cast(dict[str, object], item)
+            for item in database_values
+            if isinstance(item, dict) and cast(dict[str, object], item).get("name") == DATABASE_NAME
+        ),
         None,
     )
-    if workflow is None:
-        workflow = {}
+    gateway_link = any(
+        entry.get("key") == "DATABASE_URL"
+        and entry.get("fromDatabase") == {"name": DATABASE_NAME, "property": "connectionString"}
+        for entry in _env_entries(gateway)
+    )
+    workflow_references_database = any(
+        "fromDatabase" in entry or entry.get("key") == "DATABASE_URL" for entry in _env_entries(workflow)
+    )
+    plan = database.get("plan") if database else None
     env_groups = _environment_groups(services)
     return [
         Check("blueprint services", service_types == ["web", "workflow"], repr(service_types)),
-        Check("blueprint database", "databases" not in document, "no database declared"),
+        Check(
+            "blueprint database",
+            database is not None and gateway_link,
+            f"declares {DATABASE_NAME} and links its connectionString to the gateway's DATABASE_URL",
+        ),
+        Check(
+            "database plan",
+            isinstance(plan, str) and plan not in FREE_PLANS,
+            f"explicit paid plan ({plan!r}); free Postgres expires after 30 days",
+        ),
+        Check(
+            "database access",
+            database is not None and database.get("ipAllowList") == [],
+            "ipAllowList: [] blocks connections from outside the workspace",
+        ),
+        Check(
+            "workflow database",
+            not workflow_references_database,
+            "no database reference (Blueprint sync rejects it); DATABASE_URL comes from the factory-workflows group",
+        ),
+        Check(
+            "workflow slug",
+            any(
+                entry.get("key") == "RENDER_WORKFLOW_SLUG" and entry.get("value") == "factory-workflows"
+                for entry in _env_entries(workflow)
+            ),
+            "RENDER_WORKFLOW_SLUG=factory-workflows",
+        ),
         Check("workflow runtime", workflow.get("runtime") == "python", "Python runtime"),
         Check("workflow build", workflow.get("buildCommand") == "uv sync --frozen --no-dev", "locked uv build"),
         Check("workflow plan", "plan" not in workflow, "service-level plan omitted"),
@@ -57,22 +105,29 @@ def blueprint_checks(text: str) -> list[Check]:
     ]
 
 
+def _env_entries(service: dict[str, object]) -> list[dict[str, object]]:
+    env_vars = service.get("envVars")
+    if not isinstance(env_vars, list):
+        return []
+    return [cast(dict[str, object], entry) for entry in cast(list[object], env_vars) if isinstance(entry, dict)]
+
+
 def _environment_groups(services: list[dict[str, object]]) -> set[str]:
     groups: set[str] = set()
     for service in services:
-        env_vars = service.get("envVars")
-        if not isinstance(env_vars, list):
-            continue
-        for entry in cast(list[object], env_vars):
-            if not isinstance(entry, dict):
-                continue
-            group = cast(dict[str, object], entry).get("fromGroup")
+        for entry in _env_entries(service):
+            group = entry.get("fromGroup")
             if isinstance(group, str):
                 groups.add(group)
     return groups
 
 
-def local_checks(environment: dict[str, str], *, require_secrets: bool = False) -> list[Check]:
+def local_checks(
+    environment: dict[str, str],
+    *,
+    require_secrets: bool = False,
+    database: bool = True,
+) -> list[Check]:
     checks = [
         Check("python", sys.version_info >= (3, 11), sys.version.split()[0]),
         Check("uv.lock", (ROOT / "uv.lock").is_file(), "present" if (ROOT / "uv.lock").is_file() else "missing"),
@@ -103,6 +158,8 @@ def local_checks(environment: dict[str, str], *, require_secrets: bool = False) 
         Check(f"env {check.name}", check.ok, check.detail, required=require_secrets)
         for check in {check.name: check for check in env_checks}.values()
     )
+    if database:
+        checks.extend(database_checks(environment))
     return checks
 
 

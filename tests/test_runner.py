@@ -19,18 +19,22 @@ from factory.runner.main import main
 from factory.runner.model import _strip_anthropic_key, brokered_model
 from factory.runner.protocol import (
     RUNNER_EVENT_ADAPTER,
+    AssistantDeltaEvent,
+    AssistantTextEvent,
     ErrorEvent,
     ResultEvent,
     RunnerEvent,
     RunnerInput,
     StartedEvent,
+    ToolCallEvent,
+    ToolResultEvent,
 )
 
 
 def runner_input(tmp_path: Path, *, max_turns: int = 40) -> RunnerInput:
     scratch = tmp_path / "scratch"
     return RunnerInput(
-        protocol_version=3,
+        protocol_version=4,
         trace_id="trace-1",
         agent_id=TRIAGE.id,
         system_prompt=TRIAGE.prompt,
@@ -114,6 +118,58 @@ async def test_runner_invalid_input_has_protocol_exit_code() -> None:
     assert len(events) == 1
     assert isinstance(events[0], ErrorEvent)
     assert events[0].code == "invalid_input"
+
+
+async def test_runner_rejects_protocol_v3_input(tmp_path: Path) -> None:
+    v3 = {**json.loads(runner_input(tmp_path).model_dump_json()), "protocol_version": 3}
+    lines: list[str] = []
+    code = await main(json.dumps(v3), lines.append)
+    events = parse_events(lines)
+    assert code == 2
+    assert len(events) == 1
+    assert isinstance(events[0], ErrorEvent)
+    assert events[0].code == "invalid_input"
+    assert "protocol 4" in events[0].message
+
+
+async def test_runner_v4_streams_deltas_then_one_final_text_per_part(tmp_path: Path) -> None:
+    async def respond(messages: list[Any], info: AgentInfo):  # type annotation inferred by FunctionModel
+        if len(messages) == 1:
+            yield "Let me look… "
+            yield "☃ first."
+            yield {1: DeltaToolCall(name="bash", json_args=json.dumps({"command": "pwd"}), tool_call_id="bash-1")}
+            return
+        yield "Done"
+        yield "."
+        args: dict[str, Any] = {
+            "decision": "draft",
+            "questions": [],
+            "rationale": "ready",
+            "findings": "",
+            "relevantPaths": [],
+        }
+        yield {1: DeltaToolCall(name=info.output_tools[0].name, json_args=json.dumps(args), tool_call_id="out-1")}
+
+    lines: list[str] = []
+    code = await main(
+        runner_input(tmp_path).model_dump_json(),
+        lines.append,
+        model=FunctionModel(stream_function=respond),
+    )
+    assert code == 0, lines
+    assert all(line.isascii() and line.endswith("\n") and line.count("\n") == 1 for line in lines)
+    events = parse_events(lines)
+    texts = [event for event in events if isinstance(event, AssistantTextEvent)]
+    assert [(text.message_id, text.text) for text in texts] == [("m1-0", "Let me look… ☃ first."), ("m2-0", "Done.")]
+    for text in texts:
+        deltas = [e for e in events if isinstance(e, AssistantDeltaEvent) and e.message_id == text.message_id]
+        assert "".join(delta.text for delta in deltas) == text.text
+        assert events.index(deltas[-1]) < events.index(text)
+    tool_call = next(event for event in events if isinstance(event, ToolCallEvent))
+    assert events.index(texts[0]) < events.index(tool_call)
+    assert any(isinstance(event, ToolResultEvent) and event.tool_call_id == "bash-1" for event in events)
+    assert sum(isinstance(event, (ResultEvent, ErrorEvent)) for event in events) == 1
+    assert isinstance(events[-1], ResultEvent)
 
 
 async def test_runner_maps_invalid_submission(tmp_path: Path) -> None:

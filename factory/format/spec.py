@@ -49,12 +49,8 @@ def render_spec(
     version: int | None = None,
     warnings: Sequence[str] = (),
     change_summary: str | None = None,
-    approval_removed: bool = False,
 ) -> str:
-    """The spec comment's visible body. The caller appends the hidden marker that carries the spec as JSON.
-
-    `approval_removed` is set when a revision removed the approval label, so the maintainer knows to reapply it.
-    """
+    """The spec comment's visible body. The caller appends the hidden marker that carries the spec as JSON."""
     approve = code_span(get_config().labels.spec_approved)
     suffix = f" v{version}" if version else ""
     head = f"## Specification{suffix}\n\n"
@@ -64,10 +60,6 @@ def render_spec(
         extras.append(f"### Warnings\n\n{truncate(bullets(warnings), 4000)}")
     if change_summary and change_summary.strip():
         extras.append(f"### Changes{' in' + suffix if version else ''}\n\n{truncate(sanitize(change_summary), 4000)}")
-    if approval_removed:
-        extras.append(
-            f"> **Note:** the {approve} label was removed because the spec changed. Reapply it to approve this version."
-        )
     tail = "\n\n".join(
         [
             "",

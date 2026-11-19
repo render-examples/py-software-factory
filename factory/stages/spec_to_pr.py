@@ -8,10 +8,10 @@ from datetime import UTC, datetime
 from typing import Literal, Protocol, TypedDict
 
 from factory.changeset import Published, PublishInput, Refused
-from factory.claims import Claim, ExpectedFailure, Outcome, StatusLink
 from factory.config import RepoContext, get_config
 from factory.format import VerifyResult, pull_request_body, pull_request_title
 from factory.github import GitDataClient, GitHubClient, GitIdentity
+from factory.runs import ExpectedFailure, Outcome, Run, StatusLink
 from factory.sandbox import Sandbox
 from factory.schemas import Implementation, SpecToPrInput
 from factory.stages.approval import load_approved_spec
@@ -58,9 +58,9 @@ class SpecToPrDeps:
     close_git: bool = False
 
 
-async def spec_to_pr_stage(claim: Claim, task_input: SpecToPrInput, deps: SpecToPrDeps) -> Outcome[SpecToPrHandoff]:
-    gh = claim.gh
-    approved = await load_approved_spec(claim.gh, task_input.issue, task_input.approval)
+async def spec_to_pr_stage(run: Run, task_input: SpecToPrInput, deps: SpecToPrDeps) -> Outcome[SpecToPrHandoff]:
+    gh = run.gh
+    approved = await load_approved_spec(run.gh, task_input.issue, task_input.approval)
     issue = await gh.get_issue(task_input.issue)
     if issue.is_pull:
         raise ExpectedFailure("Spec-to-PR runs on issues, not pull requests.", "not_an_issue")
@@ -68,16 +68,16 @@ async def spec_to_pr_stage(claim: Claim, task_input: SpecToPrInput, deps: SpecTo
     date = commit_date(deps.now())
     author = await deps.identity(gh, date)
     branch = branch_name(task_input.issue)
-    await claim.report_progress("opening a sandbox")
+    await run.report_progress("opening a sandbox")
     sandbox: ImplementationSandbox | None = None
     try:
-        sandbox = await deps.open_sandbox(claim.repo, claim.repo.config.base_branch)
-        await claim.track_sandbox(sandbox.id)
+        sandbox = await deps.open_sandbox(run.repo, run.repo.config.base_branch)
+        await run.track_sandbox(sandbox.id)
         base_sha = sandbox.head_sha
         owned = await owned_commits(deps.git, branch, base_sha, author)
-        await claim.report_progress("implementing the spec")
+        await run.report_progress("implementing the spec")
         implementation = await deps.run_implementer(
-            implement_message(claim.repo, issue.number, issue.title, approved.spec), sandbox
+            implement_message(run.repo, issue.number, issue.title, approved.spec), sandbox
         )
         if not await has_changes(sandbox):
             return _no_changes()
@@ -85,8 +85,8 @@ async def spec_to_pr_stage(claim: Claim, task_input: SpecToPrInput, deps: SpecTo
         verification: list[VerifyRun] = []
         rounds = get_config().limits.repair_rounds
         for repair_round in range(rounds + 1):
-            await claim.report_progress("running the verify commands")
-            verification = await run_verify(sandbox, claim.repo.config.verify)
+            await run.report_progress("running the verify commands")
+            verification = await run_verify(sandbox, run.repo.config.verify)
             if all_passed(verification):
                 break
             if repair_round == rounds:
@@ -99,10 +99,10 @@ async def spec_to_pr_stage(claim: Claim, task_input: SpecToPrInput, deps: SpecTo
                     "verification_failed",
                 )
             round_number = repair_round + 1
-            await claim.report_progress(f"repairing failed verification (round {round_number} of {rounds})")
+            await run.report_progress(f"repairing failed verification (round {round_number} of {rounds})")
             repair = await deps.run_implementer(
                 repair_message(
-                    claim.repo,
+                    run.repo,
                     issue.number,
                     issue.title,
                     approved.spec,
@@ -114,17 +114,18 @@ async def spec_to_pr_stage(claim: Claim, task_input: SpecToPrInput, deps: SpecTo
             )
             implementation = merge_implementation(implementation, repair)
 
-        await claim.report_progress("publishing the branch")
+        await run.report_progress("publishing the branch")
         published = await deps.publish(
             PublishInput(
                 sandbox=sandbox,
-                repo=claim.repo,
+                repo=run.repo,
                 base_sha=base_sha,
                 branch=branch,
                 message=commit_message(approved.spec, task_input.issue),
                 author=author,
                 git=deps.git,
                 owned_commits=owned,
+                assert_owned=run.assert_current,
             )
         )
         if isinstance(published, Refused):
@@ -132,16 +133,16 @@ async def spec_to_pr_stage(claim: Claim, task_input: SpecToPrInput, deps: SpecTo
                 return _no_changes()
             raise ExpectedFailure(refusal_summary(published.refused), "publish_refused")
 
-        await claim.report_progress("opening the draft pull request")
+        await run.report_progress("opening the draft pull request")
         pull, _created = await gh.ensure_pull(
             head=branch,
-            base=claim.repo.config.base_branch,
+            base=run.repo.config.base_branch,
             title=pull_request_title(approved.spec),
             body=pull_request_body(
                 issue=task_input.issue,
                 spec=approved.spec,
                 implementation=implementation,
-                verification=[VerifyResult(run.command, run.passed, run.duration_ms) for run in verification],
+                verification=[VerifyResult(check.command, check.passed, check.duration_ms) for check in verification],
                 spec_url=approved.comment.html_url,
             ),
         )

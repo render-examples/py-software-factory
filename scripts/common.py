@@ -116,10 +116,19 @@ def print_checks(checks: Sequence[Check], *, json_output: bool = False) -> int:
     return 1 if any(check.required and not check.ok for check in checks) else 0
 
 
+def redact(text: str, secrets: Iterable[str]) -> str:
+    """Replace every occurrence of each non-empty secret, longest first."""
+    for secret in sorted({secret for secret in secrets if secret}, key=len, reverse=True):
+        text = text.replace(secret, "[redacted]")
+    return text
+
+
 def write_private(path: Path, content: str) -> None:
     """Write setup output with owner-only permissions."""
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # O_CREAT's mode only applies to new files; an existing .env may be group-readable.
+    os.fchmod(descriptor, 0o600)
     with os.fdopen(descriptor, "w") as handle:
         handle.write(content)
 

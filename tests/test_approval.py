@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from factory.claims import ExpectedFailure
 from factory.github import Actor, IssueComment, LabelEvent, SpecMarker, content_hash, render_marker
+from factory.runs import ExpectedFailure
 from factory.schemas import AutopilotApproval, LabelApproval
 from factory.stages import load_approved_spec
 from tests.test_schemas import spec_json

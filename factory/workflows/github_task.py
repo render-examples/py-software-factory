@@ -9,21 +9,45 @@ from typing import Any, Generic, TypeVar, cast
 from pydantic import ValidationError
 from render.workflows import TaskContext, TaskDefinition
 
-from factory.claims import Claim, ClaimOptions, Outcome, RunControl, Subject, TaskResult, with_claim
-from factory.claims.claim import TerminalState
-from factory.claims.run_control import RenderRunControl
-from factory.claims.trace import task_identity
 from factory.config import require_repo
+from factory.db import Db
+from factory.events import warn
+from factory.events.catalog import RunMode
 from factory.github import GitHubClient
+from factory.runs import (
+    Outcome,
+    RenderRunControl,
+    Run,
+    RunControl,
+    RunOptions,
+    TaskResult,
+    TerminalState,
+    task_identity,
+    with_run,
+)
 from factory.schemas.tasks import RepoInput
+from factory.threads import GitHubThread
 from factory.workflows.app import app
 
 InputT = TypeVar("InputT", bound=RepoInput)
 DataT = TypeVar("DataT")
 
 
-SubjectFactory = Callable[[InputT, bool], Subject]
-StageWork = Callable[[Claim, InputT, TaskContext], Awaitable[Outcome[DataT]]]
+StageWork = Callable[[Run, InputT, TaskContext], Awaitable[Outcome[DataT]]]
+
+
+def _no_reply(_task_input: object) -> str | None:
+    return None
+
+
+def _no_trigger(_task_input: object) -> Trigger | None:
+    return None
+
+
+@dataclass(frozen=True)
+class Trigger:
+    label: str
+    number: int
 
 
 @dataclass(frozen=True)
@@ -31,8 +55,12 @@ class GitHubTaskSpec(Generic[InputT]):
     name: str
     title: str
     input_type: type[InputT]
-    subject: SubjectFactory[InputT]
+    thread: Callable[[InputT], GitHubThread]
     timeout_seconds: int
+    reply_to: Callable[[InputT], str | None] = _no_reply
+    """The waiting run a root run answers; it then starts in reply mode."""
+    trigger: Callable[[InputT], Trigger | None] = _no_trigger
+    """The label that started a root run. Labels are commands: it is removed once the run has started."""
 
 
 @dataclass(frozen=True)
@@ -48,23 +76,41 @@ def define_github_task(spec: GitHubTaskSpec[InputT], work: StageWork[InputT, Dat
         *,
         gh: GitHubClient | None = None,
         runs: RunControl | None = None,
+        db: Db | None = None,
     ) -> dict[str, Any]:
         task_input = spec.input_type.model_validate(raw)
         repo = require_repo(task_input.repo, task_input.installation_id)
         identity = task_identity(ctx.metadata)
-        is_child = identity.trace_id != identity.run_id
-        actor = task_input.actor
-        options = ClaimOptions(
+        reply_to = spec.reply_to(task_input) if identity.is_root else None
+        trigger = spec.trigger(task_input) if identity.is_root else None
+        mode: RunMode = "continue" if not identity.is_root else "reply" if reply_to else "replace"
+        options = RunOptions(
             repo=repo,
-            subject=spec.subject(task_input, is_child),
+            thread=spec.thread(task_input),
             task=spec.name,
             title=spec.title,
-            actor=actor,
-            runs=runs or RenderRunControl(),
-            mode="continue" if is_child else "replace",
+            actor=task_input.actor,
+            runs=(lambda: runs) if runs is not None else RenderRunControl,
+            mode=mode,
+            reply_to=reply_to,
             gh=gh,
+            db=db,
         )
-        result = await with_claim(identity, options, lambda claim: work(claim, task_input, ctx))
+
+        async def started(thread_run: Run) -> Outcome[DataT]:
+            if trigger is not None:
+                try:
+                    await thread_run.gh.remove_label(trigger.number, trigger.label)
+                except Exception as error:
+                    warn(
+                        "could not remove the trigger label",
+                        label=trigger.label,
+                        number=trigger.number,
+                        error=str(error),
+                    )
+            return await work(thread_run, task_input, ctx)
+
+        result = await with_run(identity, options, started)
         return task_result_json(result)
 
     async def registered_entry(ctx: TaskContext, raw: object) -> dict[str, Any]:
@@ -102,6 +148,7 @@ def parse_task_result(raw: object) -> TaskResult[Any]:
 __all__ = [
     "GitHubTask",
     "GitHubTaskSpec",
+    "Trigger",
     "ValidationError",
     "define_github_task",
     "parse_task_result",

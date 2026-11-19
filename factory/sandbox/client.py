@@ -35,6 +35,7 @@ from factory.sandbox.types import APP_DIR, ExecResult
 _T = TypeVar("_T")
 _OUTPUT_LIMIT = 256 * 1024
 _STATUS_RE = re.compile(r"\bstatus\s+(\d{3})\b")
+_FOLLOW_STATUS_RE = re.compile(r"running|exit=(\d+)")
 
 
 @dataclass
@@ -432,6 +433,27 @@ class RenderSandbox:
     async def download(self, path: str) -> bytes:
         return await self.client.download(self.id, path)
 
+    async def exec_following(
+        self,
+        command: str,
+        *,
+        timeout_seconds: float,
+        follow_path: str,
+        offset: Callable[[], int],
+        on_output: Callable[[bytes], None],
+        as_runner: bool = False,
+    ) -> ExecResult:
+        """Run a command detached; each status poll also reads `follow_path` from `offset()` on, in the same
+        request, and passes up to 256 KB of it to `on_output`."""
+        if as_runner:
+            command = f"bash {shq(f'{APP_DIR}/as-runner.sh')} bash -c {shq(command)}"
+        execution = await self._start_detached(command, timeout_seconds=timeout_seconds)
+
+        async def poll() -> ExecResult | None:
+            return await self._poll_following(execution, follow_path, offset(), on_output)
+
+        return await self._wait_detached(execution, poll)
+
     async def _exec_detached(self, command: str, *, timeout_seconds: float) -> ExecResult:
         execution = await self._start_detached(command, timeout_seconds=timeout_seconds)
         return await self._wait_detached(execution)
@@ -458,6 +480,38 @@ class RenderSandbox:
             return None
         if probe.exit_code != 0 or not probe.stdout.strip().isdigit():
             raise RuntimeError(f"invalid detached status in {execution.directory}: {probe.stdout!r}")
+        return await self._detached_output(execution, int(probe.stdout.strip()))
+
+    async def _poll_following(
+        self,
+        execution: _DetachedExecution,
+        follow_path: str,
+        offset: int,
+        on_output: Callable[[bytes], None],
+    ) -> ExecResult | None:
+        self._check_execution(execution)
+        if offset < 0:
+            raise ValueError("follow offset cannot be negative")
+        exit_path = shq(f"{execution.directory}/exit")
+        path = shq(follow_path)
+        # The status goes to stderr so stdout carries only file bytes, and fits the 256 KB exec output tail.
+        probe = await self.client.exec(
+            self.id,
+            f'if [ -f {exit_path} ]; then printf "exit=%s" "$(cat {exit_path})" >&2; else printf running >&2; fi; '
+            f"if [ -f {path} ]; then tail -c +{offset + 1} {path} 2>/dev/null | head -c {_OUTPUT_LIMIT} 2>/dev/null; "
+            "fi; exit 0",
+            timeout_seconds=self.client.timings.control_timeout_seconds,
+        )
+        status = _FOLLOW_STATUS_RE.fullmatch(probe.stderr.strip())
+        if probe.exit_code != 0 or status is None:
+            raise RuntimeError(f"invalid detached status in {execution.directory}: {probe.stderr!r}")
+        if probe.stdout:
+            on_output(probe.stdout.encode())
+        if status.group(1) is None:
+            return None
+        return await self._detached_output(execution, int(status.group(1)))
+
+    async def _detached_output(self, execution: _DetachedExecution, exit_code: int) -> ExecResult:
         stdout, stderr = await asyncio.gather(
             self.client.exec(
                 self.id,
@@ -470,15 +524,19 @@ class RenderSandbox:
                 timeout_seconds=self.client.timings.control_timeout_seconds,
             ),
         )
-        return ExecResult(int(probe.stdout.strip()), stdout.stdout, stderr.stdout)
+        return ExecResult(exit_code, stdout.stdout, stderr.stdout)
 
-    async def _wait_detached(self, execution: _DetachedExecution) -> ExecResult:
+    async def _wait_detached(
+        self,
+        execution: _DetachedExecution,
+        poll: Callable[[], Awaitable[ExecResult | None]] | None = None,
+    ) -> ExecResult:
         self._check_execution(execution)
         deadline = self.client._clock() + execution.timeout_seconds + 15
         delay = self.client.timings.retry_base_seconds
         try:
             while True:
-                result = await self._poll_detached(execution)
+                result = await (poll() if poll else self._poll_detached(execution))
                 if result is not None:
                     return result
                 if self.client._clock() >= deadline:

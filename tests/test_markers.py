@@ -59,11 +59,11 @@ class TestMarkers:
         assert parse_marker(f"<!-- software-factory:review {bad_review} -->", ReviewMarker) is None
 
     def test_writes_camel_case_json_as_the_typescript_factory_does(self) -> None:
-        marker = render_marker(StatusMarker(run_id="trn-1", stage="triage", state="done", sandbox_id="sbx"))
+        marker = render_marker(StatusMarker(run_id="trn-1", trace_id="trn-0", stage="triage", state="done"))
         encoded = re.search(r"status (\S+) -->", marker)
         assert encoded is not None
         data = json.loads(base64.urlsafe_b64decode(encoded.group(1) + "=="))
-        assert data == {"runId": "trn-1", "stage": "triage", "state": "done", "sandboxId": "sbx"}
+        assert data == {"runId": "trn-1", "traceId": "trn-0", "stage": "triage", "state": "done"}
 
     def test_returns_none_for_missing_other_kind_corrupted_or_invalid_markers(self) -> None:
         status = render_marker(StatusMarker(run_id="trn-1", stage="triage", state="done"))

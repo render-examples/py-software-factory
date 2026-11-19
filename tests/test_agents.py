@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast, get_args, get_origin
@@ -10,16 +11,29 @@ import pytest
 from pydantic_ai import ModelRetry
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.anthropic import AnthropicModelName
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
 
+from factory.agents.errors import AgentError
 from factory.agents.registry import AGENTS, PR_REVIEWER, TRIAGE
 from factory.agents.run import UploadedSandboxRunner, run_agent
 from factory.agents.shell_policy import reject_reason
 from factory.agents.tools import AgentDeps, _shell_env, bash, edit, ls, read, write
 from factory.agents.workspace import SandboxWorkspaceBackend
 from factory.events import EventIds
-from factory.runner.protocol import ResultEvent, RunnerInput
+from factory.runner.protocol import (
+    AssistantDeltaEvent,
+    AssistantTextEvent,
+    ErrorEvent,
+    ResultEvent,
+    RunnerEvent,
+    RunnerInput,
+    StartedEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    Usage,
+    UsageEvent,
+)
 from factory.sandbox.types import (
     APP_DIR,
     REPO_DIR,
@@ -221,7 +235,7 @@ async def test_default_sandbox_command_and_upload_contain_no_key(monkeypatch: py
     monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
     sandbox = FakeSandbox()
     run_input = RunnerInput(
-        protocol_version=3,
+        protocol_version=4,
         trace_id="trace",
         agent_id=PR_REVIEWER.id,
         system_prompt=PR_REVIEWER.prompt,
@@ -239,7 +253,7 @@ async def test_default_sandbox_command_and_upload_contain_no_key(monkeypatch: py
     assert secret not in "\n".join(sandbox.commands)
     assert "ANTHROPIC_API_KEY" not in serialized
     assert all("key" not in Path(path).name for path in sandbox.uploads)
-    assert json.loads(serialized)["protocol_version"] == 3
+    assert json.loads(serialized)["protocol_version"] == 4
 
 
 async def test_default_runner_uses_protocol_script_through_standard_exec() -> None:
@@ -251,7 +265,7 @@ async def test_default_runner_uses_protocol_script_through_standard_exec() -> No
     )
     sandbox.runner_output = (event.model_dump_json() + "\n").encode()
     run_input = RunnerInput(
-        protocol_version=3,
+        protocol_version=4,
         trace_id="trace",
         agent_id=PR_REVIEWER.id,
         system_prompt=PR_REVIEWER.prompt,
@@ -329,3 +343,200 @@ def test_shell_environment_matches_as_runner_layout() -> None:
     assert environment["TMPDIR"] == RUNNER_TMP
     assert environment["PATH"] == RUNNER_PATH
     assert environment["GIT_CONFIG_GLOBAL"] == f"{APP_DIR}/gitconfig"
+
+
+AT = datetime(2026, 11, 19, 12, tzinfo=UTC)
+REVIEW: dict[str, Any] = {"summary": "fine", "riskTier": "trivial", "comments": []}
+
+
+def jsonl(*events: RunnerEvent) -> bytes:
+    lines = (json.dumps(event.model_dump(mode="json", exclude_none=True), ensure_ascii=True) for event in events)
+    return "".join(f"{line}\n" for line in lines).encode("ascii")
+
+
+class FollowingFakeSandbox(FakeSandbox):
+    """Serves `relayed` over polls ending at `poll_ends`, then leaves `runner_output` as the downloaded file."""
+
+    def __init__(self, relayed: bytes, poll_ends: list[int], received: list[RunnerEvent]) -> None:
+        super().__init__()
+        self.relayed = relayed
+        self.poll_ends = poll_ends
+        self.received = received
+        self.received_per_poll: list[int] = []
+        self.follow_paths: list[str] = []
+
+    async def exec_following(
+        self,
+        command: str,
+        *,
+        timeout_seconds: float,
+        follow_path: str,
+        offset: Callable[[], int],
+        on_output: Callable[[bytes], None],
+        as_runner: bool = False,
+    ) -> ExecResult:
+        del timeout_seconds, as_runner
+        self.follow_paths.append(follow_path)
+        for end in self.poll_ends:
+            on_output(self.relayed[offset() : end])
+            self.received_per_poll.append(len(self.received))
+        return await self.exec(command)
+
+
+def streaming_triage_model() -> FunctionModel:
+    async def respond(messages: list[Any], info: AgentInfo):  # type annotation inferred by FunctionModel
+        if len(messages) == 1:
+            yield "Listing "
+            yield "files."
+            yield {1: DeltaToolCall(name="ls", json_args="{}", tool_call_id="ls-1")}
+            return
+        yield {0: DeltaToolCall(name=info.output_tools[0].name, json_args=json.dumps(triage_output()))}
+
+    return FunctionModel(stream_function=respond)
+
+
+async def test_in_task_run_delivers_the_runner_event_sequence(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    received: list[RunnerEvent] = []
+    result = await run_agent(
+        TRIAGE,
+        "triage this",
+        event_ids=EVENT_IDS,
+        sandbox=FakeSandbox(),
+        model=streaming_triage_model(),
+        workspace_factory=lambda _sandbox: LocalWorkspaceBackend(tmp_path),
+        on_event=received.append,
+    )
+    assert result.model_dump(by_alias=True)["decision"] == "draft"
+    assert [event.type for event in received] == [
+        "started",
+        "assistant_delta",
+        "assistant_delta",
+        "assistant_text",
+        "tool_call",
+        "tool_result",
+        "usage",
+        "result",
+    ]
+    assert isinstance(received[0], StartedEvent)
+    assert received[0].agent_id == "triage"
+    deltas = [event for event in received if isinstance(event, AssistantDeltaEvent)]
+    text = next(event for event in received if isinstance(event, AssistantTextEvent))
+    assert {delta.message_id for delta in deltas} == {text.message_id} == {"m1-0"}
+    assert text.text == "".join(delta.text for delta in deltas) == "Listing files."
+    call = next(event for event in received if isinstance(event, ToolCallEvent))
+    tool_result = next(event for event in received if isinstance(event, ToolResultEvent))
+    assert (call.tool, call.tool_call_id, tool_result.tool_call_id, tool_result.is_error) == (
+        "ls",
+        "ls-1",
+        "ls-1",
+        False,
+    )
+    assert "src/" in tool_result.output_preview
+    usage = next(event for event in received if isinstance(event, UsageEvent))
+    assert usage.usage.requests == 2
+    assert isinstance(received[-1], ResultEvent)
+    assert received[-1].output == result.model_dump(mode="json", by_alias=True)
+
+
+async def test_in_task_failure_delivers_one_error_event(tmp_path: Path) -> None:
+    async def keep_listing(_messages: list[Any], _info: AgentInfo):  # type annotation inferred by FunctionModel
+        yield {0: DeltaToolCall(name="ls", json_args="{}")}
+
+    received: list[RunnerEvent] = []
+    with pytest.raises(AgentError) as raised:
+        await run_agent(
+            TRIAGE,
+            "triage this",
+            event_ids=EVENT_IDS,
+            sandbox=FakeSandbox(),
+            model=FunctionModel(stream_function=keep_listing),
+            workspace_factory=lambda _sandbox: LocalWorkspaceBackend(tmp_path),
+            timeout_seconds=5,
+            on_event=received.append,
+        )
+    assert raised.value.code == "max_turns"
+    terminals = [event for event in received if isinstance(event, (ResultEvent, ErrorEvent))]
+    assert terminals == [received[-1]]
+    assert isinstance(received[-1], ErrorEvent)
+    assert received[-1].code == "max_turns"
+
+
+async def test_raising_on_event_never_fails_the_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / "src").mkdir()
+    calls = 0
+
+    def explode(_event: RunnerEvent) -> None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("recorder down")
+
+    result = await run_agent(
+        TRIAGE,
+        "triage this",
+        event_ids=EVENT_IDS,
+        sandbox=FakeSandbox(),
+        model=streaming_triage_model(),
+        workspace_factory=lambda _sandbox: LocalWorkspaceBackend(tmp_path),
+        on_event=explode,
+    )
+    assert result.model_dump(by_alias=True)["decision"] == "draft"
+    assert calls == 8
+    warnings = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert [warning["msg"] for warning in warnings] == ["agent event handler failed"]
+
+
+async def test_in_sandbox_run_relays_lines_during_polls_and_trusts_only_the_file() -> None:
+    started = StartedEvent(at=AT, agent_id="pr-reviewer", harness="pydantic-ai", harness_version="2", model="m")
+    delta = AssistantDeltaEvent(at=AT, message_id="m1-0", text="Reviewing")
+    text = AssistantTextEvent(at=AT, message_id="m1-0", text="Reviewing")
+    usage = UsageEvent(at=AT, usage=Usage(input_tokens=10, output_tokens=5, requests=1))
+    relayed = jsonl(started, delta, ResultEvent(at=AT, output={**REVIEW, "riskTier": "high"}, turns=1))
+    final = ResultEvent(at=AT, output=REVIEW, turns=1)
+    received: list[RunnerEvent] = []
+    first_line = relayed.index(b"\n") + 1
+    sandbox = FollowingFakeSandbox(relayed, [first_line + 5, len(relayed)], received)
+    sandbox.runner_output = jsonl(started, delta, text, usage, final)
+
+    result = await run_agent(PR_REVIEWER, "review this", event_ids=EVENT_IDS, sandbox=sandbox, on_event=received.append)
+
+    assert result.model_dump(by_alias=True)["riskTier"] == "trivial"
+    assert sandbox.received_per_poll == [1, 2]
+    assert sandbox.follow_paths[0].endswith(".jsonl")
+    assert received[:2] == [started, delta]
+    terminals = [event for event in received if isinstance(event, (ResultEvent, ErrorEvent))]
+    assert terminals == [final] == received[-1:]
+
+
+@pytest.mark.parametrize("cut", [0, 1, 40, 200, -1])
+async def test_in_sandbox_relay_finishes_from_the_file_without_skips_or_repeats(cut: int) -> None:
+    events: list[RunnerEvent] = [
+        StartedEvent(at=AT, agent_id="pr-reviewer", harness="pydantic-ai", harness_version="2", model="m"),
+        AssistantDeltaEvent(at=AT, message_id="m1-0", text="Looks ☃ "),
+        AssistantDeltaEvent(at=AT, message_id="m1-0", text="good"),
+        AssistantTextEvent(at=AT, message_id="m1-0", text="Looks ☃ good"),
+        UsageEvent(at=AT, usage=Usage(input_tokens=10, output_tokens=5, requests=1)),
+        ResultEvent(at=AT, output=REVIEW, turns=1),
+    ]
+    file = jsonl(*events)
+    received: list[RunnerEvent] = []
+    sandbox = FollowingFakeSandbox(file, [len(file) if cut == -1 else cut], received)
+    sandbox.runner_output = file
+
+    await run_agent(PR_REVIEWER, "review this", event_ids=EVENT_IDS, sandbox=sandbox, on_event=received.append)
+
+    assert received == events
+
+
+async def test_in_sandbox_rejected_result_delivers_an_error_instead() -> None:
+    received: list[RunnerEvent] = []
+    output = jsonl(ResultEvent(at=AT, output={"summary": "missing fields"}, turns=1))
+    sandbox = FollowingFakeSandbox(output, [len(output)], received)
+    sandbox.runner_output = output
+
+    with pytest.raises(AgentError, match="riskTier"):
+        await run_agent(PR_REVIEWER, "review this", event_ids=EVENT_IDS, sandbox=sandbox, on_event=received.append)
+
+    assert len(received) == 1
+    assert isinstance(received[0], ErrorEvent)
+    assert received[0].code == "invalid_submission"

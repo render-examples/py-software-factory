@@ -1,10 +1,23 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 
 from render.workflows.context import TaskRunMetadata
 
-from factory.claims.status import RunIdentity
+
+@dataclass(frozen=True)
+class RunIdentity:
+    """Which Workflows task run is acting."""
+
+    trace_id: str
+    """The root task run."""
+    run_id: str
+    """This task run."""
+
+    @property
+    def is_root(self) -> bool:
+        return self.trace_id == self.run_id
 
 
 def task_identity(metadata: TaskRunMetadata | None) -> RunIdentity:

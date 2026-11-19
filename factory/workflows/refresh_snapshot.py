@@ -7,10 +7,9 @@ from typing import Protocol
 
 from render.workflows import TaskContext
 
-from factory.claims import check_permission
-from factory.claims.permission import PermissionGitHub
 from factory.config import Tasks, require_repo
 from factory.github import github_for
+from factory.runs import PermissionGitHub, check_permission
 from factory.schemas import RefreshSnapshotInput
 from factory.stages import refresh_snapshot_stage
 from factory.workflows.app import app

@@ -15,16 +15,27 @@ dry-run/read-only unless marked **mutating**. Never paste secrets into command h
 
 Create a Blueprint from the fork's `render.yaml`. Review the proposed resources before applying:
 
-- web service `factory-gateway`, Python, `starter`
+- web service `factory-gateway`, Python, `starter`, with `DATABASE_URL` linked from `factory-db`
 - Workflow `factory-workflows`, Python, with no service-level plan
+- Postgres 17 database `factory-db`, `basic-256mb`, with no external access
 - environment groups `factory-gateway` and `factory-workflows`
-- no database
 
 The Workflow inherits the repository containing the Blueprint. If Render validation asks for an explicit `repo`
 URL, use the fork URL in the Dashboard rather than committing a canonical repository URL that would break forks.
 
 Wait for the gateway URL before creating the GitHub App. A Blueprint apply/deploy is an external mutation and is
 intentionally not performed by any setup script.
+
+Then give the Workflow the database URL. A Blueprint can't link a database to a Workflow service, so copy the
+gateway's value into the `factory-workflows` group. Dry run first, then **mutating**:
+
+```bash
+RENDER_API_KEY=... RENDER_WORKSPACE_ID=... uv run setup-render --link-database
+RENDER_API_KEY=... RENDER_WORKSPACE_ID=... uv run setup-render --link-database --apply
+```
+
+Redeploy `factory-workflows` so it picks up the value. The command never prints it. See
+[Database](../configuration.md#database).
 
 ## 3. Register the GitHub App
 
@@ -58,6 +69,9 @@ Run the read-only/dry-run handoff:
 ```bash
 RENDER_API_KEY=... RENDER_WORKSPACE_ID=... uv run setup-render
 ```
+
+If `.env` has no `EVENTS_READ_TOKEN`, this generates one into it without printing it. Add the same value to the
+`factory-gateway` group.
 
 Create the sandbox group explicitly:
 
@@ -113,5 +127,31 @@ sandbox, rerun the command with `--probe-brokering`. This creates a sandbox and 
 request, so use it only in an authorized workspace. The implementation sends no provider key in input, files,
 commands, or environment.
 
+`doctor --remote` checks that `factory-workflows` holds `DATABASE_URL` (by name only), and that the database connects
+and is migrated. For the connection, put `factory-db`'s external URL in `.env` as `DATABASE_URL` and allow your IP on
+`factory-db` while it runs (see [Database](../configuration.md#database)).
+
 Finally send a GitHub `ping`, inspect Recent Deliveries, and trigger Triage on a disposable issue. Success requires
-the expected GitHub result, not merely HTTP 202 or a queued task.
+the expected GitHub result, not merely HTTP 202 or a queued task. The run should also appear as rows in the `runs`
+and `threads` tables.
+
+## Upgrading an existing deployment
+
+A deployment from before the event log has no database, and its services deploy on `checksPass`, so merging code
+deploys both. Land the database plumbing first, in this order:
+
+1. **Blueprint first.** Merge only the `render.yaml` changes and sync the Blueprint. This creates `factory-db` and
+   gives the gateway `DATABASE_URL`. The current gateway code ignores it.
+2. **Link Workflows.** Run `setup-render --link-database --apply`, redeploy `factory-workflows`, and confirm with
+   `doctor --remote`.
+3. **Drain.** Wait until nothing is running, or cancel runs from the Render Dashboard. Runs started under the old
+   status-comment claim aren't in Postgres, so a new run can't stop them.
+4. **Merge the event log and Postgres runs.** Workflows migrates on its first task. Coordination moves to Postgres;
+   the gateway still routes by label.
+5. **Merge gateway decisions.** The gateway migrates at startup. Labels become commands, and replies resume only
+   waiting runs.
+6. **Re-trigger waiting issues.** Issues that asked questions before the upgrade have no waiting run. Re-apply
+   `factory:triage` or `factory:autopilot` on any that still need answers, and tell maintainers.
+
+Rolling back gateway decisions restores label routing safely. Rolling back Postgres runs after runs have been
+recorded loses nothing, but brings back the status-comment claim's races.

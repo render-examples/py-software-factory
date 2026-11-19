@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Collection
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
 
 from factory.changeset.changes import (
@@ -59,6 +59,8 @@ class PublishInput:
     owned_commits: Collection[str] = field(default_factory=tuple[str, ...])
     """Commits an earlier attempt of this run created: the branch may be moved off them as well as off
     base_sha."""
+    assert_owned: Callable[[], Awaitable[None]] | None = None
+    """Raises once the run no longer owns its thread. Called immediately before the branch moves."""
 
 
 @dataclass(frozen=True)
@@ -119,6 +121,8 @@ async def _write(git: GitDataClient, publish_input: PublishInput, checked: Check
         author=publish_input.author,
         committer=publish_input.author,
     )
+    if publish_input.assert_owned is not None:
+        await publish_input.assert_owned()
     await _move_branch(
         git,
         publish_input.branch,

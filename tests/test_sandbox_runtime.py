@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -357,6 +358,182 @@ async def test_long_exec_uses_private_detached_transport_and_quotes_command() ->
     assert result.stdout == "out\n"
     assert result.stderr == "err\n"
     assert hostile not in api.commands[1:]
+
+
+class FollowedFile:
+    """Answers following polls from a file that grows by one step per poll, like a detached runner writing it."""
+
+    def __init__(self, sizes: list[int], data: bytes, *, exit_after: int | None) -> None:
+        self.sizes = sizes
+        self.data = data
+        self.exit_after = exit_after
+        self.polls = 0
+        self.offsets: list[int] = []
+
+    def __call__(self, command: str) -> list[SandboxExecEvent]:
+        if "detach.sh" in command or command.startswith("rm -rf"):
+            return [SandboxExecExit(0)]
+        if command.startswith("tail -c 262144"):
+            stream = "out\n" if command.endswith("/stdout'") else "err\n"
+            return [SandboxExecOutput("stdout", stream), SandboxExecExit(0)]
+        match = re.search(r"tail -c \+(\d+) ", command)
+        assert match is not None, command
+        assert "| head -c 262144 " in command
+        offset = int(match.group(1)) - 1
+        self.offsets.append(offset)
+        written = self.sizes[min(self.polls, len(self.sizes) - 1)]
+        self.polls += 1
+        done = self.exit_after is not None and self.polls >= self.exit_after
+        chunk = self.data[offset:written][: 256 * 1024]
+        events: list[SandboxExecEvent] = [SandboxExecOutput("stderr", "exit=5" if done else "running")]
+        if chunk:
+            events.insert(0, SandboxExecOutput("stdout", chunk.decode()))
+        return [*events, SandboxExecExit(0)]
+
+
+def following_sandbox(api: FakeApi, clock: FakeClock) -> RenderSandbox:
+    client = PacedSandboxClient(
+        cast(SandboxApi, api),
+        pacer=ApiPacer(0),
+        sleep=clock.sleep,
+        clock=clock,
+    )
+    return RenderSandbox("sbx-fake", client)
+
+
+@pytest.mark.asyncio
+async def test_exec_following_reads_the_file_tail_in_each_single_request_poll() -> None:
+    data = b"".join(f"line {n}\n".encode() for n in range(10))
+    followed = FollowedFile([0, 12, 40, len(data)], data, exit_after=4)
+    api = FakeApi()
+    api.event_factory = followed
+    clock = FakeClock()
+    received: list[bytes] = []
+    offset = 0
+
+    def on_output(chunk: bytes) -> None:
+        nonlocal offset
+        received.append(chunk)
+        offset += len(chunk)
+
+    result = await following_sandbox(api, clock).exec_following(
+        "run it",
+        timeout_seconds=600,
+        follow_path="/opt/factory/scratch/runs/agent-1.jsonl",
+        offset=lambda: offset,
+        on_output=on_output,
+    )
+
+    assert result == ExecResult(5, "out\n", "err\n")
+    assert b"".join(received) == data
+    assert followed.offsets == [0, 0, 12, 40]
+    polls = [command for command in api.commands if "tail -c +" in command]
+    assert len(polls) == followed.polls == 4
+    assert all("/opt/factory/scratch/runs/agent-1.jsonl" in command for command in polls)
+    assert "detach.sh" in api.commands[0]
+    assert api.commands[1:5] == polls
+    assert len(api.commands) == 1 + 4 + 2 + 1
+    assert api.commands[-1].startswith("rm -rf -- '/tmp/factory-detached-")
+    assert clock.sleeps == [2.0, 3.0, 4.5]
+
+
+@pytest.mark.asyncio
+async def test_exec_following_caps_each_poll_at_256_kib_and_resumes_at_the_offset() -> None:
+    data = b"x" * (600 * 1024)
+    followed = FollowedFile([len(data)], data, exit_after=4)
+    api = FakeApi()
+    api.event_factory = followed
+    received: list[bytes] = []
+
+    await following_sandbox(api, FakeClock()).exec_following(
+        "run it",
+        timeout_seconds=600,
+        follow_path="/tmp/out.jsonl",
+        offset=lambda: sum(map(len, received)),
+        on_output=received.append,
+    )
+
+    assert [len(chunk) for chunk in received] == [256 * 1024, 256 * 1024, 88 * 1024]
+    assert followed.offsets == [0, 256 * 1024, 512 * 1024, 600 * 1024]
+
+
+@pytest.mark.asyncio
+async def test_exec_following_backs_off_to_the_cap_and_honors_the_deadline() -> None:
+    followed = FollowedFile([0], b"", exit_after=None)
+    api = FakeApi()
+    api.event_factory = followed
+    clock = FakeClock()
+
+    with pytest.raises(TimeoutError, match="did not report completion"):
+        await following_sandbox(api, clock).exec_following(
+            "never ends",
+            timeout_seconds=60,
+            follow_path="/tmp/out.jsonl",
+            offset=lambda: 0,
+            on_output=lambda _chunk: None,
+        )
+
+    assert clock.sleeps[:6] == [2.0, 3.0, 4.5, 6.75, 10.0, 10.0]
+    assert sum(clock.sleeps[:-1]) < 60 + 15 <= sum(clock.sleeps)
+    assert followed.polls == len(clock.sleeps) + 1
+    assert api.commands[-1].startswith("rm -rf -- '/tmp/factory-detached-")
+
+
+@pytest.mark.asyncio
+async def test_exec_following_poll_command_frames_status_and_bytes_in_a_real_shell(tmp_path: Path) -> None:
+    followed = tmp_path / "run.jsonl"
+    followed.write_bytes(b'{"a":1}\n{"b":2}\n')
+    detached: list[str] = []
+    api = FakeApi()
+
+    def events(command: str) -> list[SandboxExecEvent]:
+        if "detach.sh" in command:
+            detached.append(shlex.split(command)[2])
+            return [SandboxExecExit(0)]
+        if "tail -c +" in command:
+            Path(detached[0]).mkdir(exist_ok=True)
+            Path(detached[0], "exit").write_text("0\n")
+        result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+        return [
+            SandboxExecOutput("stdout", result.stdout),
+            SandboxExecOutput("stderr", result.stderr),
+            SandboxExecExit(result.returncode),
+        ]
+
+    api.event_factory = events
+    received: list[bytes] = []
+    result = await following_sandbox(api, FakeClock()).exec_following(
+        "run it",
+        timeout_seconds=600,
+        follow_path=str(followed),
+        offset=lambda: len(b'{"a":1}\n'),
+        on_output=received.append,
+    )
+
+    assert received == [b'{"b":2}\n']
+    assert result.exit_code == 0
+    assert not Path(detached[0]).exists()
+
+
+@pytest.mark.asyncio
+async def test_exec_following_rejects_an_unframed_status() -> None:
+    api = FakeApi()
+
+    def events(command: str) -> list[SandboxExecEvent]:
+        if "tail -c +" in command:
+            return [SandboxExecOutput("stderr", "tail: oops\nrunning"), SandboxExecExit(0)]
+        return [SandboxExecExit(0)]
+
+    api.event_factory = events
+    with pytest.raises(RuntimeError, match="invalid detached status"):
+        await following_sandbox(api, FakeClock()).exec_following(
+            "run it",
+            timeout_seconds=600,
+            follow_path="/tmp/out.jsonl",
+            offset=lambda: 0,
+            on_output=lambda _chunk: None,
+        )
+    assert api.commands[-1].startswith("rm -rf -- '/tmp/factory-detached-")
 
 
 def test_egress_uses_only_trusted_hosts_and_builder_has_no_model_host() -> None:

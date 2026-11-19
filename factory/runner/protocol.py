@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from factory.agents.errors import RunnerErrorCode
 from factory.agents.tools import ToolName
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 
 class ProtocolModel(BaseModel):
@@ -17,7 +17,7 @@ class ProtocolModel(BaseModel):
 
 
 class RunnerInput(ProtocolModel):
-    protocol_version: Literal[3]
+    protocol_version: Literal[4]
     trace_id: str = Field(min_length=1)
     agent_id: str = Field(min_length=1)
     system_prompt: str = Field(min_length=1)
@@ -67,8 +67,19 @@ class ToolResultEvent(Event):
     output_preview: str
 
 
+class AssistantDeltaEvent(Event):
+    """A chunk of a text part as the model streams it."""
+
+    type: Literal["assistant_delta"] = "assistant_delta"
+    message_id: str
+    text: str
+
+
 class AssistantTextEvent(Event):
+    """The full text of one finished text part, sent once after its deltas."""
+
     type: Literal["assistant_text"] = "assistant_text"
+    message_id: str
     text: str
 
 
@@ -90,7 +101,14 @@ class ErrorEvent(Event):
 
 
 RunnerEvent = Annotated[
-    StartedEvent | ToolCallEvent | ToolResultEvent | AssistantTextEvent | UsageEvent | ResultEvent | ErrorEvent,
+    StartedEvent
+    | ToolCallEvent
+    | ToolResultEvent
+    | AssistantDeltaEvent
+    | AssistantTextEvent
+    | UsageEvent
+    | ResultEvent
+    | ErrorEvent,
     Field(discriminator="type"),
 ]
 RUNNER_EVENT_ADAPTER = TypeAdapter(RunnerEvent)

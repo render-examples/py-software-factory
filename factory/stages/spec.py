@@ -5,10 +5,9 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Literal, Protocol, TypedDict
 
-from factory.claims import ExpectedFailure, Outcome, StatusLink
-from factory.config import get_config
 from factory.format import render_spec, sanitize_inline, truncate
 from factory.github import Issue, IssueComment, SpecMarker, content_hash, render_marker
+from factory.runs import ExpectedFailure, Outcome, StatusLink
 from factory.sandbox import Sandbox
 from factory.schemas import SpecDraft, validate_spec
 from factory.stages.thread import CurrentSpec, retry_message
@@ -28,7 +27,6 @@ class SpecSandbox(Sandbox, Protocol):
 class SpecGitHub(Protocol):
     async def create_comment(self, number: int, body: str) -> IssueComment: ...
     async def update_comment(self, comment_id: int, body: str) -> IssueComment: ...
-    async def remove_label(self, number: int, label: str) -> None: ...
 
 
 SpecWriter = Callable[[str, SpecSandbox], Awaitable[SpecDraft]]
@@ -75,28 +73,22 @@ async def publish_spec(
         )
 
     version = (current.version if current else 0) + 1
-    labels = get_config().labels
-    approval_removed = labels.spec_approved in issue.labels
-    if approval_removed:
-        await gh.remove_label(issue.number, labels.spec_approved)
     visible = render_spec(
         draft.spec,
         version=version,
         warnings=warnings,
         change_summary=draft.change_summary if current else None,
-        approval_removed=approval_removed,
     )
     marker = render_marker(SpecMarker(spec=spec_data, hash=hash_value, version=version, notes=draft.notes))
     body = f"{visible}\n\n{marker}"
     comment = (
         await gh.update_comment(current.comment.id, body) if current else await gh.create_comment(issue.number, body)
     )
-    note = f"; `{labels.spec_approved}` was removed, so reapply it to approve this version" if approval_removed else ""
     action = "revised the spec to" if current else "drafted spec"
     handoff = {"kind": "spec", "comment_id": comment.id, "hash": hash_value, "version": version}
     return Outcome(
         "revised" if current else "drafted",
-        f"{action} v{version}{note}.",
+        f"{action} v{version}.",
         links=(StatusLink(f"Spec v{version}", comment.html_url),),
         data=handoff,
     )
