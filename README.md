@@ -69,5 +69,3 @@ credential-brokering checks pass.
 - There is no cross-run spend ledger or durable conversation carry-over.
 - Brokering prevents key theft, not model spend: code in a live, model-enabled sandbox can use the restricted
   credential until that sandbox terminates.
-- In-task tools and lifecycle polling share the workspace Sandbox API rate limit; the process-wide pacer favors
-  safety over maximum concurrency.

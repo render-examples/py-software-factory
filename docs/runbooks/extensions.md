@@ -22,10 +22,10 @@ To switch placement:
 
 1. Change the agent definition, not stage code.
 2. Recalculate egress: model host allowed only for in-sandbox execution.
-3. Verify the in-task path uses the paced attached workspace, or the in-sandbox path uses the detached runner and
+3. Verify the in-task path uses the attached sandbox workspace, or the in-sandbox path uses the detached runner and
    ends with exactly one typed result/error.
 4. Assert the provider key is absent from sandbox input, uploads, commands, files, and environment.
-5. Run the credential broker probe for in-sandbox placement and a read-only sandbox API pacing check for in-task.
+5. Run the credential broker probe for in-sandbox placement.
 6. Recheck request limits, timeout, cleanup, cancellation, and telemetry.
 
 Do not switch to in-sandbox by injecting `ANTHROPIC_API_KEY`. If brokering is unavailable, keep the agent in-task

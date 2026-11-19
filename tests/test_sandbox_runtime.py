@@ -31,10 +31,9 @@ from render.experimental.sandbox.types import (
 from factory.config import RepoContext
 from factory.config_model import RepoConfig
 from factory.sandbox.client import (
-    ApiPacer,
-    PacedSandboxClient,
     RenderSandbox,
     SandboxApi,
+    SandboxClient,
     SandboxTimings,
     measure_sandbox_requests,
 )
@@ -151,60 +150,21 @@ def repo(*, base_branch: str = "main", egress: tuple[str, ...] | str = ()) -> Re
 
 
 @pytest.mark.asyncio
-async def test_process_pacer_reserves_slots_across_callers() -> None:
+async def test_calls_are_not_paced() -> None:
     clock = FakeClock()
-    pacer = ApiPacer(0.6, clock=clock, sleep=clock.sleep)
-
-    await pacer.wait()
-    await pacer.wait()
-    await pacer.wait()
-
-    assert clock.sleeps == pytest.approx([0.6, 0.6])
-
-
-@pytest.mark.asyncio
-async def test_client_builds_default_pacer_from_configured_interval() -> None:
-    clock = FakeClock()
-    client = PacedSandboxClient(
-        cast(SandboxApi, FakeApi()),
-        timings=SandboxTimings(min_request_interval_seconds=0.7),
-        clock=clock,
-        sleep=clock.sleep,
-    )
+    client = SandboxClient(cast(SandboxApi, FakeApi()), clock=clock, sleep=clock.sleep)
 
     async def operation() -> str:
         return "ok"
 
-    await client.call(operation)
-    await client.call(operation)
-    assert clock.sleeps == pytest.approx([0.7])
-
-
-@pytest.mark.asyncio
-async def test_explicit_pacer_override_wins_over_timing_config() -> None:
-    clock = FakeClock()
-    client = PacedSandboxClient(
-        cast(SandboxApi, FakeApi()),
-        timings=SandboxTimings(min_request_interval_seconds=9),
-        pacer=ApiPacer(0.25, clock=clock, sleep=clock.sleep),
-        clock=clock,
-        sleep=clock.sleep,
-    )
-
-    async def operation() -> str:
-        return "ok"
-
-    await client.call(operation)
-    await client.call(operation)
-    assert clock.sleeps == pytest.approx([0.25])
+    for _ in range(5):
+        await client.call(operation)
+    assert clock.sleeps == []
 
 
 @pytest.mark.asyncio
 async def test_request_meter_isolates_concurrent_agent_contexts() -> None:
-    client = PacedSandboxClient(
-        cast(SandboxApi, FakeApi()),
-        timings=SandboxTimings(min_request_interval_seconds=0),
-    )
+    client = SandboxClient(cast(SandboxApi, FakeApi()))
 
     async def operation() -> str:
         await asyncio.sleep(0)
@@ -220,13 +180,9 @@ async def test_request_meter_isolates_concurrent_agent_contexts() -> None:
 
 @pytest.mark.asyncio
 async def test_request_meter_counts_each_retry_attempt() -> None:
-    client = PacedSandboxClient(
+    client = SandboxClient(
         cast(SandboxApi, FakeApi()),
-        timings=SandboxTimings(
-            min_request_interval_seconds=0,
-            retry_base_seconds=0,
-            retry_attempts=3,
-        ),
+        timings=SandboxTimings(retry_base_seconds=0, retry_attempts=3),
     )
     attempts = 0
 
@@ -245,15 +201,9 @@ async def test_request_meter_counts_each_retry_attempt() -> None:
 @pytest.mark.asyncio
 async def test_call_retries_only_429_and_503_with_capped_backoff() -> None:
     clock = FakeClock()
-    client = PacedSandboxClient(
+    client = SandboxClient(
         cast(SandboxApi, FakeApi()),
-        timings=SandboxTimings(
-            min_request_interval_seconds=0,
-            retry_base_seconds=2,
-            retry_max_seconds=3,
-            retry_attempts=4,
-        ),
-        pacer=ApiPacer(0, clock=clock, sleep=clock.sleep),
+        timings=SandboxTimings(retry_base_seconds=2, retry_max_seconds=3, retry_attempts=4),
         sleep=clock.sleep,
         clock=clock,
     )
@@ -285,11 +235,7 @@ async def test_collected_exec_keeps_only_256_kib_tail_per_stream() -> None:
         SandboxExecOutput("stderr", "b" * (260 * 1024)),
         SandboxExecExit(9),
     ]
-    client = PacedSandboxClient(
-        cast(SandboxApi, api),
-        pacer=ApiPacer(0),
-        timings=SandboxTimings(min_request_interval_seconds=0),
-    )
+    client = SandboxClient(cast(SandboxApi, api))
 
     result = await client.exec("sbx-fake", "large")
 
@@ -301,7 +247,7 @@ async def test_collected_exec_keeps_only_256_kib_tail_per_stream() -> None:
 @pytest.mark.asyncio
 async def test_close_is_idempotent_and_missing_sandbox_counts_as_closed() -> None:
     api = FakeApi()
-    client = PacedSandboxClient(cast(SandboxApi, api), pacer=ApiPacer(0))
+    client = SandboxClient(cast(SandboxApi, api))
     sandbox = RenderSandbox("sbx-fake", client)
 
     await sandbox.close()
@@ -312,7 +258,7 @@ async def test_close_is_idempotent_and_missing_sandbox_counts_as_closed() -> Non
     missing_api.not_found_on_terminate = True
     missing = RenderSandbox(
         "sbx-gone",
-        PacedSandboxClient(cast(SandboxApi, missing_api), pacer=ApiPacer(0)),
+        SandboxClient(cast(SandboxApi, missing_api)),
     )
     await missing.close()
     await missing.close()
@@ -323,7 +269,7 @@ async def test_close_is_idempotent_and_missing_sandbox_counts_as_closed() -> Non
 async def test_short_exec_uses_sdk_stream() -> None:
     api = FakeApi()
     api.events = [SandboxExecOutput("stdout", "ok\n"), SandboxExecExit(0)]
-    client = PacedSandboxClient(cast(SandboxApi, api), pacer=ApiPacer(0))
+    client = SandboxClient(cast(SandboxApi, api))
     sandbox = RenderSandbox("sbx-fake", client)
 
     result = await sandbox.exec("printf ok", timeout_seconds=30)
@@ -346,7 +292,7 @@ async def test_long_exec_uses_private_detached_transport_and_quotes_command() ->
         return [SandboxExecExit(0)]
 
     api.event_factory = events
-    client = PacedSandboxClient(cast(SandboxApi, api), pacer=ApiPacer(0))
+    client = SandboxClient(cast(SandboxApi, api))
     sandbox = RenderSandbox("sbx-fake", client)
     hostile = "printf '%s' okay; touch /tmp/should-not-be-a-host-command"
 
@@ -392,9 +338,8 @@ class FollowedFile:
 
 
 def following_sandbox(api: FakeApi, clock: FakeClock) -> RenderSandbox:
-    client = PacedSandboxClient(
+    client = SandboxClient(
         cast(SandboxApi, api),
-        pacer=ApiPacer(0),
         sleep=clock.sleep,
         clock=clock,
     )
@@ -597,7 +542,7 @@ async def test_resolve_base_head_preserves_slashes_in_git_ref_path(monkeypatch: 
 @pytest.mark.asyncio
 async def test_untrusted_refs_are_rejected_before_any_api_call(ref: BranchRef | PullRef) -> None:
     api = FakeApi()
-    client = PacedSandboxClient(cast(SandboxApi, api), pacer=ApiPacer(0))
+    client = SandboxClient(cast(SandboxApi, api))
     with pytest.raises(ValueError, match=r"unsupported|invalid"):
         await open_sandbox(repo(), ref, client=client, sandbox_group_id="sbg-test")
 
@@ -655,7 +600,7 @@ def test_real_runner_bundle_imports_without_host_only_package_initializers(tmp_p
 async def test_open_failure_after_creation_terminates_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
     module = importlib.import_module("factory.sandbox.open")
     api = FakeApi()
-    client = PacedSandboxClient(cast(SandboxApi, api), pacer=ApiPacer(0))
+    client = SandboxClient(cast(SandboxApi, api))
 
     async def fail_bundle(sandbox: RenderSandbox, bundle: object = None) -> bool:
         raise RuntimeError("bad runner bundle")

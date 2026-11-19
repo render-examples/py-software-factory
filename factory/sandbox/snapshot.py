@@ -24,7 +24,7 @@ from factory.github.auth import github_token
 from factory.github.client import github_for
 from factory.github.request import encode_path
 from factory.identifiers import is_safe_branch
-from factory.sandbox.client import PacedSandboxClient, RenderSandbox
+from factory.sandbox.client import RenderSandbox, SandboxClient
 from factory.sandbox.egress import builder_egress, egress_hint
 from factory.sandbox.operations import checked, configured_group_id, require_success
 from factory.sandbox.shell import shq
@@ -198,7 +198,7 @@ async def ensure_runner_bundle(sandbox: RenderSandbox, bundle: RunnerBundle | No
 
 
 async def build_snapshot(
-    client: PacedSandboxClient,
+    client: SandboxClient,
     repo: RepoContext,
     sha: str,
     *,
@@ -360,7 +360,7 @@ async def run_install(sandbox: RenderSandbox, install: str, failure_hint: str = 
 
 
 async def prune_snapshots(
-    client: PacedSandboxClient,
+    client: SandboxClient,
     sandbox_group_id: str,
     name: str,
     keep: int = KEEP_SNAPSHOTS,

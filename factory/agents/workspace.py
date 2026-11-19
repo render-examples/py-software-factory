@@ -1,4 +1,4 @@
-"""Pydantic AI workspace adapter over the factory's paced sandbox client."""
+"""Pydantic AI workspace adapter over the factory's sandbox client."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from factory.sandbox import REPO_DIR, Sandbox, shq
 class SandboxWorkspaceBackend:
     """Attach Pydantic AI tools to an already-opened factory sandbox.
 
-    The factory keeps sandbox creation, pacing, retries, credentials, and cleanup
+    The factory keeps sandbox creation, retries, credentials, and cleanup
     in its own lifecycle. This backend only translates workspace operations.
     """
 

@@ -1,4 +1,4 @@
-"""Paced access to Render Sandboxes and the factory's concrete sandbox adapter."""
+"""Access to Render Sandboxes and the factory's concrete sandbox adapter."""
 
 from __future__ import annotations
 
@@ -116,9 +116,8 @@ Clock = Callable[[], float]
 
 @dataclass(frozen=True)
 class SandboxTimings:
-    """Runtime budgets and the workspace-wide request cadence."""
+    """Runtime budgets."""
 
-    min_request_interval_seconds: float = 1.0
     control_timeout_seconds: float = 30
     """Timeout for short streaming control commands."""
     streaming_exec_max_seconds: float = 40
@@ -130,34 +129,6 @@ class SandboxTimings:
     prepare_timeout_seconds: float = 40 * 60
     snapshot_timeout_seconds: float = 20 * 60
     verify_timeout_seconds: float = 5 * 60
-
-
-class ApiPacer:
-    """Reserves request slots across all sandboxes in one process."""
-
-    def __init__(
-        self,
-        interval_seconds: float = 1.0,
-        *,
-        clock: Clock = time.monotonic,
-        sleep: Sleep = asyncio.sleep,
-    ) -> None:
-        if interval_seconds < 0:
-            raise ValueError("request interval cannot be negative")
-        self.interval_seconds = interval_seconds
-        self._clock = clock
-        self._sleep = sleep
-        self._next_request_at = 0.0
-        self._lock = asyncio.Lock()
-
-    async def wait(self) -> None:
-        async with self._lock:
-            now = self._clock()
-            request_at = max(now, self._next_request_at)
-            self._next_request_at = request_at + self.interval_seconds
-        delay = request_at - now
-        if delay > 0:
-            await self._sleep(delay)
 
 
 def _error_status(error: BaseException) -> int | None:
@@ -172,15 +143,14 @@ def _error_status(error: BaseException) -> int | None:
     return None
 
 
-class PacedSandboxClient:
-    """Adds process-wide pacing, bounded exec, retries, and polling to the SDK."""
+class SandboxClient:
+    """Adds bounded exec, retries, and polling to the SDK."""
 
     def __init__(
         self,
         api: SandboxApi,
         *,
         timings: SandboxTimings | None = None,
-        pacer: ApiPacer | None = None,
         sleep: Sleep = asyncio.sleep,
         clock: Clock = time.monotonic,
     ) -> None:
@@ -190,11 +160,6 @@ class PacedSandboxClient:
             raise ValueError("control timeout must be positive")
         if self.timings.streaming_exec_max_seconds < self.timings.control_timeout_seconds:
             raise ValueError("streaming exec maximum cannot be shorter than the control timeout")
-        self._pacer = pacer or ApiPacer(
-            self.timings.min_request_interval_seconds,
-            clock=clock,
-            sleep=sleep,
-        )
         self._sleep = sleep
         self._clock = clock
 
@@ -205,12 +170,11 @@ class PacedSandboxClient:
         retry_statuses: frozenset[int] = frozenset({429, 503}),
         attempts: int | None = None,
     ) -> _T:
-        """Pace one API call and retry only explicit transient HTTP statuses."""
+        """Make one API call and retry only explicit transient HTTP statuses."""
         limit = attempts or self.timings.retry_attempts
         if limit < 1:
             raise ValueError("attempts must be positive")
         for attempt in range(limit):
-            await self._pacer.wait()
             meter = _REQUEST_METER.get()
             if meter is not None:
                 meter.count += 1
@@ -401,7 +365,7 @@ class _DetachedExecution:
 class RenderSandbox:
     """Concrete implementation of :class:`factory.sandbox.types.Sandbox`."""
 
-    def __init__(self, sandbox_id: str, client: PacedSandboxClient) -> None:
+    def __init__(self, sandbox_id: str, client: SandboxClient) -> None:
         self._id = sandbox_id
         self.client = client
         self._closed = False
@@ -563,10 +527,10 @@ class RenderSandbox:
             self._closed = True
 
 
-_shared_client: PacedSandboxClient | None = None
+_shared_client: SandboxClient | None = None
 
 
-def sandbox_client() -> PacedSandboxClient:
+def sandbox_client() -> SandboxClient:
     """Build the process-wide client lazily from Render's standard environment."""
     global _shared_client
     if _shared_client is None:
@@ -579,5 +543,5 @@ def sandbox_client() -> PacedSandboxClient:
         if not token:
             raise RuntimeError("RENDER_API_KEY is not set")
         api = cast(SandboxApi, RenderAsync(token=token, owner_id=workspace_id).sandboxes)
-        _shared_client = PacedSandboxClient(api)
+        _shared_client = SandboxClient(api)
     return _shared_client

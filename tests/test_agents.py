@@ -283,7 +283,7 @@ async def test_default_runner_uses_protocol_script_through_standard_exec() -> No
     assert any("run-agent.sh" in command for command in sandbox.commands)
 
 
-async def test_paced_workspace_rejects_paths_outside_the_repository() -> None:
+async def test_sandbox_workspace_rejects_paths_outside_the_repository() -> None:
     workspace = SandboxWorkspaceBackend(FakeSandbox())
     with pytest.raises(ValueError, match="escapes"):
         await workspace.read_bytes("../secret")

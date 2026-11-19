@@ -16,7 +16,7 @@ from render.experimental.sandbox.types import NetworkPolicy
 
 from factory.config import RepoContext, get_config
 from factory.identifiers import is_safe_branch
-from factory.sandbox.client import PacedSandboxClient, RenderSandbox, sandbox_client
+from factory.sandbox.client import RenderSandbox, SandboxClient, sandbox_client
 from factory.sandbox.egress import egress_hint, task_egress
 from factory.sandbox.errors import SandboxHeadMovedError
 from factory.sandbox.operations import checked, configured_group_id, require_success
@@ -66,7 +66,7 @@ class OpenedRenderSandbox(RenderSandbox):
     def __init__(
         self,
         sandbox_id: str,
-        client: PacedSandboxClient,
+        client: SandboxClient,
         head_sha: str,
         manifest: SnapshotManifest,
     ) -> None:
@@ -80,7 +80,7 @@ async def open_sandbox(
     ref: SandboxRef,
     *,
     model_egress: Iterable[str] = (),
-    client: PacedSandboxClient | None = None,
+    client: SandboxClient | None = None,
     sandbox_group_id: str | None = None,
     deps: OpenSandboxDeps | None = None,
 ) -> OpenedRenderSandbox:
@@ -126,7 +126,7 @@ async def with_sandbox(
     ref: SandboxRef,
     *,
     model_egress: Iterable[str] = (),
-    client: PacedSandboxClient | None = None,
+    client: SandboxClient | None = None,
     sandbox_group_id: str | None = None,
     deps: OpenSandboxDeps | None = None,
 ) -> AsyncGenerator[OpenedRenderSandbox]:
@@ -149,7 +149,7 @@ async def with_sandbox(
 
 
 async def _create_from_snapshot(
-    client: PacedSandboxClient,
+    client: SandboxClient,
     repo: RepoContext,
     sandbox_group_id: str,
     policy: NetworkPolicy,
