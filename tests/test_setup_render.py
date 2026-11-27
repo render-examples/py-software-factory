@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.setup_render import ServiceRef, main
+from scripts.setup_render import ServiceRef, env_groups, main
 
 DATABASE_URL = "postgresql://factory_user:sup3r-secret@dpg-abc123-a/factory"
 RENDER_ENV = ("RENDER_API_KEY", "RENDER_ADMIN_API_KEY", "RENDER_WORKSPACE_ID")
@@ -108,3 +108,10 @@ def test_link_database_requires_render_credentials(
 def test_apply_requires_link_database(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["--apply"]) == 2
     assert "--link-database" in _output(capsys)
+
+
+def test_env_groups_reads_wrapped_and_flat_list_items() -> None:
+    wrapped = [{"cursor": "c1", "envGroup": {"id": "evg-1", "name": "py-factory-gateway"}}]
+    flat = [{"id": "evg-2", "name": "py-factory-workflows"}, "noise", {"cursor": "c3"}]
+    assert env_groups(wrapped) == [{"id": "evg-1", "name": "py-factory-gateway"}]
+    assert env_groups(flat) == [{"id": "evg-2", "name": "py-factory-workflows"}]
