@@ -30,7 +30,7 @@ def test_workflow_database_reference_fails() -> None:
     document = _blueprint()
     workflow = document["services"][1]
     workflow["envVars"].append(
-        {"key": "DATABASE_URL", "fromDatabase": {"name": "factory-db", "property": "connectionString"}}
+        {"key": "DATABASE_URL", "fromDatabase": {"name": "py-factory-db", "property": "connectionString"}}
     )
     assert _failed(document) == {"workflow database"}
 

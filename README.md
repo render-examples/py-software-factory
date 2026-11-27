@@ -12,10 +12,10 @@ deployed or live-verified against Render, GitHub, or Logfire; Blueprint validati
 
 ## Architecture
 
-A FastAPI gateway (`factory-gateway`) verifies GitHub webhooks and starts tasks on a Render Workflow
-(`factory-workflows`). The Workflow runs each agent's loop and owns every GitHub write; everything an agent does,
+A FastAPI gateway (`py-factory-gateway`) verifies GitHub webhooks and starts tasks on a Render Workflow
+(`py-factory-workflows`). The Workflow runs each agent's loop and owns every GitHub write; everything an agent does,
 every command and file operation, runs in a Render Sandbox as an unprivileged user, and file operations run where the
-files are instead of moving them to the host. Both services share a Postgres event log (`factory-db`): runs
+files are instead of moving them to the host. Both services share a Postgres event log (`py-factory-db`): runs
 coordinate ownership of an issue or pull request there, and the gateway records each delivery's decision there.
 Trigger labels are commands, removed once a run starts. A comment on an issue resumes the run that is waiting for a
 reply; otherwise it starts nothing. The GitHub status comment is a view of Postgres state, and Logfire traces each

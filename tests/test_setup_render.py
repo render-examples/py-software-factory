@@ -17,7 +17,7 @@ class FakeRenderApi:
     ) -> None:
         self.services = services
         self.env = env or {}
-        self.groups = {"factory-workflows": "evg-workflows"} if groups is None else groups
+        self.groups = {"py-factory-workflows": "evg-workflows"} if groups is None else groups
         self.writes: list[tuple[str, str, str]] = []
 
     def web_services(self) -> list[ServiceRef]:
@@ -36,7 +36,7 @@ class FakeRenderApi:
         self.writes.append((group_id, key, value))
 
 
-GATEWAY = ServiceRef("srv-gateway", "factory-gateway-x7k2")
+GATEWAY = ServiceRef("srv-gateway", "py-factory-gateway-x7k2")
 
 
 def _linked_api() -> FakeRenderApi:
@@ -57,7 +57,7 @@ def test_link_database_dry_run_writes_nothing(capsys: pytest.CaptureFixture[str]
     output = _output(capsys)
     assert api.writes == []
     assert "Dry run" in output
-    assert "factory-gateway-x7k2 (srv-gateway)" in output
+    assert "py-factory-gateway-x7k2 (srv-gateway)" in output
     assert "evg-workflows" in output
     assert DATABASE_URL not in output
     assert "sup3r-secret" not in output
@@ -68,7 +68,7 @@ def test_link_database_apply_upserts_the_group(capsys: pytest.CaptureFixture[str
     assert main(["--link-database", "--apply"], api=api) == 0
     output = _output(capsys)
     assert api.writes == [("evg-workflows", "DATABASE_URL", DATABASE_URL)]
-    assert "Redeploy factory-workflows" in output
+    assert "Redeploy py-factory-workflows" in output
     assert DATABASE_URL not in output
     assert "sup3r-secret" not in output
 
@@ -76,15 +76,15 @@ def test_link_database_apply_upserts_the_group(capsys: pytest.CaptureFixture[str
 @pytest.mark.parametrize(
     ("api", "message"),
     [
-        (FakeRenderApi([ServiceRef("srv-other", "factory-workflows")]), "no factory-gateway web service"),
+        (FakeRenderApi([ServiceRef("srv-other", "py-factory-workflows")]), "no py-factory-gateway web service"),
         (
-            FakeRenderApi([ServiceRef("srv-a", "factory-gateway"), ServiceRef("srv-b", "factory-gateway-b2")]),
-            "several gateway services match: factory-gateway (srv-a), factory-gateway-b2 (srv-b)",
+            FakeRenderApi([ServiceRef("srv-a", "py-factory-gateway"), ServiceRef("srv-b", "py-factory-gateway-b2")]),
+            "several gateway services match: py-factory-gateway (srv-a), py-factory-gateway-b2 (srv-b)",
         ),
-        (FakeRenderApi([GATEWAY]), "factory-gateway-x7k2 has no DATABASE_URL; apply the Blueprint first"),
+        (FakeRenderApi([GATEWAY]), "py-factory-gateway-x7k2 has no DATABASE_URL; apply the Blueprint first"),
         (
             FakeRenderApi([GATEWAY], env={(GATEWAY.id, "DATABASE_URL"): DATABASE_URL}, groups={}),
-            "env group factory-workflows not found",
+            "env group py-factory-workflows not found",
         ),
     ],
 )

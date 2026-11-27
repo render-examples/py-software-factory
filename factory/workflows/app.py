@@ -7,7 +7,7 @@ from render import Retry, Workflows
 from factory import tracing
 from factory.config import get_config
 
-tracing.configure("factory-workflows")
+tracing.configure("py-factory-workflows")
 tracing.instrument_workflows(include_content=get_config().telemetry.include_content)
 
 # A replay can repeat model spend and durable writes. GitHub sends a fresh trigger instead.

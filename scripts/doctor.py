@@ -21,8 +21,8 @@ LINK_DATABASE_HINT = (
     "(see docs/configuration.md#database)"
 )
 LOCAL_DATABASE_HINT = (
-    "locally, use factory-db's external URL with ?sslmode=verify-full&sslrootcert=system "
-    "and allow your IP on factory-db"
+    "locally, use py-factory-db's external URL with ?sslmode=verify-full&sslrootcert=system "
+    "and allow your IP on py-factory-db"
 )
 
 

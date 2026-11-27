@@ -21,7 +21,7 @@ sandbox.
 
 ## State
 
-Postgres (`factory-db`, reached through asyncpg) holds an append-only event log and the spend counters. Every fact is an event on a stream such as `run:<id>`,
+Postgres (`py-factory-db`, reached through asyncpg) holds an append-only event log and the spend counters. Every fact is an event on a stream such as `run:<id>`,
 `thread:<key>` or `delivery:github:<id>`. Tables derived from the log (`runs`, `threads`) are updated in the same
 transaction as each append, and `db-rebuild` can replay them from the log.
 
@@ -50,7 +50,7 @@ and one of two tool sets (`factory/agents/tools.py`):
 All agents also carry Pydantic AI Harness capabilities for long runs: `ClearToolResults` keeps old tool output from
 filling the context window, `DetectLoops` notices repeated calls that make no progress, `RepairToolArguments`
 fixes malformed tool-call JSON, and `SpendLimits` stops an agent once a run, repository, or deployment budget is
-spent. Spend is counted in `factory-db`, so every Workflow instance enforces the same budgets (see
+spent. Spend is counted in `py-factory-db`, so every Workflow instance enforces the same budgets (see
 [Spend budgets](configuration.md#spend-budgets)).
 
 The agent loop runs in the Workflow task, so the model key never leaves Workflow compute and the sandbox has no route
@@ -101,5 +101,5 @@ verify command; and publishing. Traces are a view like the status comment: nothi
   accepted so the gateway can decide from recorded state. An optional hardening step is a separate Postgres role for
   the gateway that can only insert and read events and read `threads` and `runs`; because appends update the derived
   tables in the same transaction, that needs a `SECURITY DEFINER` append function or trigger-based projections.
-- `factory-db` accepts connections only from inside the workspace (`ipAllowList: []`). Operators add their IP
+- `py-factory-db` accepts connections only from inside the workspace (`ipAllowList: []`). Operators add their IP
   temporarily to run diagnostics from a laptop. Setup and diagnostic commands never print the database URL.

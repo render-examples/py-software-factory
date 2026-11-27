@@ -46,7 +46,7 @@ def build() -> Any:
             await db.aclose()
 
     app.router.lifespan_context = lifespan
-    tracing.configure("factory-gateway")
+    tracing.configure("py-factory-gateway")
     tracing.instrument_gateway(app)
     return app
 

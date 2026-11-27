@@ -62,7 +62,7 @@ def _production_services() -> WorkflowServices:
     async def agent(
         definition: AgentDefinition, run: Run, message: str, sandbox: Sandbox, timeout_seconds: float = 30 * 60
     ) -> BaseModel:
-        """Runs an agent with the configured spend budgets, counted in factory-db on the Workflows pool."""
+        """Runs an agent with the configured spend budgets, counted in py-factory-db on the Workflows pool."""
         pool = await workflows_db().pool()
         # The store takes an asyncpg pool; asyncpg's stubs and its protocol disagree on acquire()'s return type.
         store = stores.setdefault(id(pool), PostgresSpendStore(cast(Any, pool)))

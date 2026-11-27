@@ -23,27 +23,28 @@ from render.public_api.types import UNSET, Unset
 
 from scripts.common import SANDBOX_GROUP_RE, fail
 
-GROUP_NAME = "factory-sandboxes"
+GROUP_NAME = "py-factory-sandboxes"
 REGION = "oregon"
-GATEWAY_NAME_RE = re.compile(r"^factory-gateway(-[a-z0-9]+)?$")
-GATEWAY_GROUP = "factory-gateway"
-WORKFLOWS_GROUP = "factory-workflows"
+GATEWAY_NAME_RE = re.compile(r"^py-factory-gateway(-[a-z0-9]+)?$")
+GATEWAY_GROUP = "py-factory-gateway"
+WORKFLOWS_GROUP = "py-factory-workflows"
 PAGE_SIZE = 100
 
 
 def render_handoff(group_id: str | None = None) -> list[str]:
     group = group_id or "<sbg-id>"
     return [
-        "Blueprint env groups: factory-gateway and factory-workflows (created by render.yaml).",
-        "factory-gateway: RENDER_API_KEY, GITHUB_WEBHOOK_SECRET.",
+        "Blueprint env groups: py-factory-gateway and py-factory-workflows (created by render.yaml).",
+        "py-factory-gateway: RENDER_API_KEY, GITHUB_WEBHOOK_SECRET.",
         (
-            "factory-workflows: RENDER_API_KEY, RENDER_WORKSPACE_ID, GITHUB_APP_ID, "
+            "py-factory-workflows: RENDER_API_KEY, RENDER_WORKSPACE_ID, GITHUB_APP_ID, "
             "GITHUB_APP_PRIVATE_KEY, ANTHROPIC_API_KEY, FACTORY_SANDBOX_GROUP_ID."
         ),
-        f"Set FACTORY_SANDBOX_GROUP_ID={group} only on factory-workflows.",
+        f"Set FACTORY_SANDBOX_GROUP_ID={group} only on py-factory-workflows.",
         (
-            "DATABASE_URL: the Blueprint links factory-db to factory-gateway. After applying it, run "
-            "`setup-render --link-database --apply` to copy it into factory-workflows, then redeploy factory-workflows."
+            "DATABASE_URL: the Blueprint links py-factory-db to py-factory-gateway. After applying it, run "
+            "`setup-render --link-database --apply` to copy it into py-factory-workflows, then redeploy "
+            "py-factory-workflows."
         ),
         (
             "Optional tracing: add a Logfire write token as LOGFIRE_TOKEN to each group, a separate token per "
@@ -175,12 +176,12 @@ def link_database(
     apply: bool,
     api: RenderEnvApi | None = None,
 ) -> list[str]:
-    """Copy the gateway's Blueprint-provided DATABASE_URL into the factory-workflows group, without echoing it."""
+    """Copy the gateway's Blueprint-provided DATABASE_URL into the py-factory-workflows group, without echoing it."""
     if api is None:
         api = GeneratedRenderApi.from_environment(environment)
     gateways = [service for service in api.web_services() if GATEWAY_NAME_RE.fullmatch(service.name)]
     if not gateways:
-        raise ValueError("no factory-gateway web service in this workspace; apply the Blueprint first")
+        raise ValueError("no py-factory-gateway web service in this workspace; apply the Blueprint first")
     if len(gateways) > 1:
         names = ", ".join(f"{service.name} ({service.id})" for service in gateways)
         raise ValueError(f"several gateway services match: {names}; expected exactly one")
@@ -206,7 +207,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--link-database",
         action="store_true",
-        help="copy the gateway's DATABASE_URL into the factory-workflows group (dry run without --apply)",
+        help="copy the gateway's DATABASE_URL into the py-factory-workflows group (dry run without --apply)",
     )
     result.add_argument("--apply", action="store_true", help="with --link-database, write the value (mutates Render)")
     return result
