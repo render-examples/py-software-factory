@@ -74,7 +74,7 @@ def exchange_manifest_code(code: str) -> dict[str, Any]:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--name", default="py-software-factory")
+    result.add_argument("--name", default="pydantic-software-factory")
     result.add_argument("--gateway-url", help="deployed gateway URL, for example https://factory.onrender.com")
     result.add_argument("--description", default="GitHub-native software factory on Render")
     result.add_argument("--output", type=Path, help="write manifest JSON with mode 0600 instead of stdout")

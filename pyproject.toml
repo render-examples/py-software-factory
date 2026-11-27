@@ -1,5 +1,5 @@
 [project]
-name = "py-software-factory"
+name = "pydantic-software-factory"
 version = "0.1.0"
 description = "A GitHub-native software factory on Render, with Pydantic AI agents in Render Sandboxes"
 readme = "README.md"

@@ -33,7 +33,7 @@ _ROOT_TEXT = (
     "software-factory gateway is running.\n\n"
     "It has no web UI. GitHub sends webhooks to POST /webhooks/github, and the factory replies on issues and pull "
     "requests.\n"
-    "Health checks: GET /health and GET /ready. Setup and usage: docs/quickstart.md in your py-software-factory "
+    "Health checks: GET /health and GET /ready. Setup and usage: docs/quickstart.md in your pydantic-software-factory "
     "repository.\n"
 )
 

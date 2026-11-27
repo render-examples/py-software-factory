@@ -1,4 +1,4 @@
-# py-software-factory
+# pydantic-software-factory
 
 A GitHub-native software factory on Render: Pydantic AI agents with Pydantic AI Harness capabilities, Render
 Workflows and Sandboxes, and Pydantic Logfire tracing. A Python port of
