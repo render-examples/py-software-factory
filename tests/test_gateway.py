@@ -68,10 +68,10 @@ class Unreachable:
 
 
 class Gateway:
-    def __init__(self, db: Db) -> None:
+    def __init__(self, db: Db, secret: str | None = SECRET) -> None:
         self.calls: list[tuple[RunName, dict[str, Any], str]] = []
         self.error: Exception | None = None
-        app = create_gateway(GatewayDeps(start_run=self.start_run, webhook_secret=SECRET, db=db))
+        app = create_gateway(GatewayDeps(start_run=self.start_run, webhook_secret=secret, db=db))
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway")
 
     async def start_run(self, run: RunName, input: dict[str, Any], idempotency_key: str) -> str:
@@ -123,6 +123,26 @@ async def test_tells_a_browser_the_headless_gateway_is_running_without_revealing
     assert "no web UI" in res.text
     assert SECRET not in res.text
     assert offline.calls == []
+
+
+async def test_a_gateway_without_its_webhook_secret_serves_but_refuses_webhooks() -> None:
+    gateway = Gateway(Unreachable(), secret=None)
+    try:
+        assert (await gateway.client.get("/ready")).status_code == 200
+        res = await gateway.webhook(json.dumps(triage_payload()).encode(), signature="sha256=00")
+        assert res.status_code == 503
+        assert res.json() == {"error": "GITHUB_WEBHOOK_SECRET is not set"}
+        assert gateway.calls == []
+    finally:
+        await gateway.client.aclose()
+
+
+async def test_the_app_manifest_redirect_shows_the_exchange_command(offline: Gateway) -> None:
+    res = await offline.client.get("/", params={"code": "abc123_DEF-4"})
+    assert "uv run setup-app --exchange-code abc123_DEF-4 --credentials-output tmp/github-app.env" in res.text
+    odd = await offline.client.get("/", params={"code": "<script>"})
+    assert "software-factory gateway is running" in odd.text
+    assert "<script>" not in odd.text
 
 
 async def test_rejects_a_bad_signature_before_parsing_the_body(

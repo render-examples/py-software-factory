@@ -21,17 +21,20 @@ GATEWAY_POOL_SIZE = 10
 
 
 def build() -> Any:
-    webhook_secret = require_env("GITHUB_WEBHOOK_SECRET")
+    # Optional at startup: the GitHub App that issues it is created against this gateway's URL, so a first deploy
+    # must serve requests before it exists. Webhooks are refused until it is set.
+    webhook_secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "").strip() or None
     workflow_slug = require_env("RENDER_WORKFLOW_SLUG")
     db = create_db(require_env("DATABASE_URL"), GATEWAY_POOL_SIZE)
-    # Reads RENDER_API_KEY.
-    render = RenderAsync()
+    clients: list[RenderAsync] = []
 
     async def start_run(run: RunName, task_input: dict[str, Any], idempotency_key: str) -> str:
+        if not clients:
+            clients.append(RenderAsync())  # Reads RENDER_API_KEY.
         context = tracing.carrier()
         traced = {**task_input, "trace_context": context} if context else task_input
         slug = f"{workflow_slug}/{run}"
-        return (await render.workflows.start_task(slug, [traced], idempotency_key=idempotency_key)).id
+        return (await clients[0].workflows.start_task(slug, [traced], idempotency_key=idempotency_key)).id
 
     app = create_gateway(GatewayDeps(start_run=start_run, webhook_secret=webhook_secret, db=db))
 
