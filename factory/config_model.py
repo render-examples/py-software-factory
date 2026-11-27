@@ -56,7 +56,7 @@ class SandboxSettings(_Config):
 
 
 class SpendSettings(_Config):
-    """Dollar ceilings on model spend, counted in factory-db so every Workflow instance enforces the same budget.
+    """Dollar ceilings on model spend, counted in py-factory-db so every Workflow instance enforces the same budget.
 
     A budget stops the next model request once it is spent; the request that crosses it completes. Leave one unset
     to disable it. Provider-side limits still apply on top.

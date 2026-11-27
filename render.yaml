@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: factory-gateway
+    name: py-factory-gateway
     runtime: python
     region: oregon
     plan: starter
@@ -9,36 +9,36 @@ services:
     healthCheckPath: /ready
     autoDeployTrigger: checksPass
     envVars:
-      - fromGroup: factory-gateway
+      - fromGroup: py-factory-gateway
       - key: RENDER_WORKFLOW_SLUG
-        value: factory-workflows
+        value: py-factory-workflows
       - key: DATABASE_URL
         fromDatabase:
-          name: factory-db
+          name: py-factory-db
           property: connectionString
 
   # A workflow service can't reference a database here: every Blueprint sync fails
   # with "depends on non-existent DB". After applying the Blueprint, run
   # `uv run setup-render --link-database --apply` to copy the gateway's
-  # DATABASE_URL into the factory-workflows group, then redeploy factory-workflows.
+  # DATABASE_URL into the py-factory-workflows group, then redeploy py-factory-workflows.
   - type: workflow
-    name: factory-workflows
+    name: py-factory-workflows
     runtime: python
     region: oregon
     buildCommand: uv sync --frozen --no-dev
     startCommand: uv run --frozen --no-dev render-workflows factory.workflows.app:app
     autoDeployTrigger: checksPass
     envVars:
-      - fromGroup: factory-workflows
+      - fromGroup: py-factory-workflows
       - key: RENDER_WORKFLOW_SLUG
-        value: factory-workflows
+        value: py-factory-workflows
 
 # Same region as the services so they use the internal URL. The empty allow list
 # blocks every connection from outside the workspace; add an operator IP in the
 # Dashboard only while running doctor or db-rebuild from a laptop. Keep a paid
 # plan: free Postgres expires after 30 days.
 databases:
-  - name: factory-db
+  - name: py-factory-db
     region: oregon
     plan: basic-256mb
     postgresMajorVersion: "17"
@@ -47,9 +47,9 @@ databases:
 # Blueprint-managed group shells make service wiring reproducible. Secret values
 # are added in the Dashboard or by an authorized setup operator; they are never
 # committed here. Environment groups do not support `sync: false`.
-# factory-workflows also receives DATABASE_URL from `setup-render --link-database`.
+# py-factory-workflows also receives DATABASE_URL from `setup-render --link-database`.
 envVarGroups:
-  - name: factory-gateway
+  - name: py-factory-gateway
     envVars: []
-  - name: factory-workflows
+  - name: py-factory-workflows
     envVars: []

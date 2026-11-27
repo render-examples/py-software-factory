@@ -24,7 +24,7 @@ WORKFLOW_ENV = (
     "FACTORY_SANDBOX_GROUP_ID",
     "DATABASE_URL",
 )
-DATABASE_NAME = "factory-db"
+DATABASE_NAME = "py-factory-db"
 FREE_PLANS = {"free"}
 
 
@@ -84,22 +84,22 @@ def blueprint_checks(text: str) -> list[Check]:
         Check(
             "workflow database",
             not workflow_references_database,
-            "no database reference (Blueprint sync rejects it); DATABASE_URL comes from the factory-workflows group",
+            "no database reference (Blueprint sync rejects it); DATABASE_URL comes from the py-factory-workflows group",
         ),
         Check(
             "workflow slug",
             any(
-                entry.get("key") == "RENDER_WORKFLOW_SLUG" and entry.get("value") == "factory-workflows"
+                entry.get("key") == "RENDER_WORKFLOW_SLUG" and entry.get("value") == "py-factory-workflows"
                 for entry in _env_entries(workflow)
             ),
-            "RENDER_WORKFLOW_SLUG=factory-workflows",
+            "RENDER_WORKFLOW_SLUG=py-factory-workflows",
         ),
         Check("workflow runtime", workflow.get("runtime") == "python", "Python runtime"),
         Check("workflow build", workflow.get("buildCommand") == "uv sync --frozen --no-dev", "locked uv build"),
         Check("workflow plan", "plan" not in workflow, "service-level plan omitted"),
         Check(
             "secret groups",
-            env_groups == {"factory-gateway", "factory-workflows"},
+            env_groups == {"py-factory-gateway", "py-factory-workflows"},
             "gateway and workflow groups linked",
         ),
     ]

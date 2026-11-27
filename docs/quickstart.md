@@ -37,7 +37,7 @@ echo 'DATABASE_URL=postgresql:///factory' >> .env
 uv run preflight   # connects and reports pending migrations
 ```
 
-To use the deployed `factory-db` instead, see [Database](configuration.md#database).
+To use the deployed `py-factory-db` instead, see [Database](configuration.md#database).
 
 ## Setup commands
 
@@ -63,8 +63,8 @@ Validate the Blueprint without applying it:
 render blueprints validate render.yaml
 ```
 
-The Blueprint defines exactly two Python services, `factory-gateway` (web) and `factory-workflows` (Workflow), and one
-Postgres database, `factory-db`, linked to the gateway. There is no service-level plan on the Workflow. The build uses
+The Blueprint defines exactly two Python services, `py-factory-gateway` (web) and `py-factory-workflows` (Workflow), and one
+Postgres database, `py-factory-db`, linked to the gateway. There is no service-level plan on the Workflow. The build uses
 the checked-in uv lock. After applying the Blueprint, run `setup-render --link-database --apply` so the Workflow gets
 `DATABASE_URL` too.
 

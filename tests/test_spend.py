@@ -1,4 +1,4 @@
-"""Spend budgets: built from configuration, enforced by Pydantic AI Harness, counted in factory-db over asyncpg."""
+"""Spend budgets: built from configuration, enforced by Pydantic AI Harness, counted in py-factory-db over asyncpg."""
 
 from __future__ import annotations
 

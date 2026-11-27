@@ -15,10 +15,10 @@ dry-run/read-only unless marked **mutating**. Never paste secrets into command h
 
 Create a Blueprint from the fork's `render.yaml`. Review the proposed resources before applying:
 
-- web service `factory-gateway`, Python, `starter`, with `DATABASE_URL` linked from `factory-db`
-- Workflow `factory-workflows`, Python, with no service-level plan
-- Postgres 17 database `factory-db`, `basic-256mb`, with no external access
-- environment groups `factory-gateway` and `factory-workflows`
+- web service `py-factory-gateway`, Python, `starter`, with `DATABASE_URL` linked from `py-factory-db`
+- Workflow `py-factory-workflows`, Python, with no service-level plan
+- Postgres 17 database `py-factory-db`, `basic-256mb`, with no external access
+- environment groups `py-factory-gateway` and `py-factory-workflows`
 
 The Workflow inherits the repository containing the Blueprint. If Render validation asks for an explicit `repo`
 URL, use the fork URL in the Dashboard rather than committing a canonical repository URL that would break forks.
@@ -27,14 +27,14 @@ Wait for the gateway URL before creating the GitHub App. A Blueprint apply/deplo
 intentionally not performed by any setup script.
 
 Then give the Workflow the database URL. A Blueprint can't link a database to a Workflow service, so copy the
-gateway's value into the `factory-workflows` group. Dry run first, then **mutating**:
+gateway's value into the `py-factory-workflows` group. Dry run first, then **mutating**:
 
 ```bash
 RENDER_API_KEY=... RENDER_WORKSPACE_ID=... uv run setup-render --link-database
 RENDER_API_KEY=... RENDER_WORKSPACE_ID=... uv run setup-render --link-database --apply
 ```
 
-Redeploy `factory-workflows` so it picks up the value. The command never prints it. See
+Redeploy `py-factory-workflows` so it picks up the value. The command never prints it. See
 [Database](../configuration.md#database).
 
 ## 3. Register the GitHub App
@@ -76,13 +76,13 @@ Create the sandbox group explicitly:
 RENDER_API_KEY=... RENDER_WORKSPACE_ID=... uv run setup-render --apply-group
 ```
 
-Put the resulting `sbg-...` ID in `FACTORY_SANDBOX_GROUP_ID` on `factory-workflows`. Populate both environment
+Put the resulting `sbg-...` ID in `FACTORY_SANDBOX_GROUP_ID` on `py-factory-workflows`. Populate both environment
 groups exactly as described in [configuration.md](../configuration.md). Never add `RENDER_ADMIN_API_KEY` to a
 service.
 
 For tracing, create two Logfire write tokens in your Logfire project, one per service, and add them as
-`LOGFIRE_TOKEN` to the `factory-gateway` and `factory-workflows` groups. Add the project's URL as
-`LOGFIRE_PROJECT_URL` to `factory-workflows` so status comments link each run's trace. Decide whether traces include prompts and
+`LOGFIRE_TOKEN` to the `py-factory-gateway` and `py-factory-workflows` groups. Add the project's URL as
+`LOGFIRE_PROJECT_URL` to `py-factory-workflows` so status comments link each run's trace. Decide whether traces include prompts and
 repository content before the first run (see [Observability](../configuration.md#observability-logfire)).
 
 ## 5. Configure repositories
@@ -115,9 +115,9 @@ uv run doctor --remote \
 
 Also verify in Render that all expected Workflow tasks registered.
 
-`doctor --remote` checks that `factory-workflows` holds `DATABASE_URL` and reports which groups hold `LOGFIRE_TOKEN`
-(by name only), and that the database connects and is migrated. For the connection, put `factory-db`'s external URL in `.env` as `DATABASE_URL` and allow your IP on
-`factory-db` while it runs (see [Database](../configuration.md#database)).
+`doctor --remote` checks that `py-factory-workflows` holds `DATABASE_URL` and reports which groups hold `LOGFIRE_TOKEN`
+(by name only), and that the database connects and is migrated. For the connection, put `py-factory-db`'s external URL in `.env` as `DATABASE_URL` and allow your IP on
+`py-factory-db` while it runs (see [Database](../configuration.md#database)).
 
 Finally send a GitHub `ping`, inspect Recent Deliveries, and trigger Triage on a disposable issue. Success requires
 the expected GitHub result, not merely HTTP 202 or a queued task. The run should also appear as rows in the `runs`
@@ -131,9 +131,9 @@ several minutes longer.
 A deployment from before the event log has no database, and its services deploy on `checksPass`, so merging code
 deploys both. Land the database plumbing first, in this order:
 
-1. **Blueprint first.** Merge only the `render.yaml` changes and sync the Blueprint. This creates `factory-db` and
+1. **Blueprint first.** Merge only the `render.yaml` changes and sync the Blueprint. This creates `py-factory-db` and
    gives the gateway `DATABASE_URL`. The current gateway code ignores it.
-2. **Link Workflows.** Run `setup-render --link-database --apply`, redeploy `factory-workflows`, and confirm with
+2. **Link Workflows.** Run `setup-render --link-database --apply`, redeploy `py-factory-workflows`, and confirm with
    `doctor --remote`.
 3. **Drain.** Wait until nothing is running, or cancel runs from the Render Dashboard. Runs started under the old
    status-comment claim aren't in Postgres, so a new run can't stop them.

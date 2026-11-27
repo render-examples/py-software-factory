@@ -25,7 +25,7 @@ so the next run rebuilds each repository's snapshot inline.
 ## Add a model provider
 
 Add the provider's Pydantic AI extra to `pydantic-ai-slim` in `pyproject.toml`, use its model string in the agent
-definition, and add its key variable to the `factory-workflows` group. Agent loops run in the Workflow task, so the
+definition, and add its key variable to the `py-factory-workflows` group. Agent loops run in the Workflow task, so the
 sandbox needs no egress to the provider.
 
 ## Add a span

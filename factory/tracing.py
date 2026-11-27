@@ -65,7 +65,7 @@ def configure(service_name: str) -> None:
 
 def instrument_workflows(*, include_content: bool) -> None:
     """Agent runs, model requests, and tool calls; GitHub, Render, and Anthropic requests, without headers or bodies,
-    which hold credentials; and factory-db queries, without their parameters, which hold event payloads."""
+    which hold credentials; and py-factory-db queries, without their parameters, which hold event payloads."""
     logfire.instrument_pydantic_ai(include_content=include_content)
     logfire.instrument_httpx()
     logfire.instrument_asyncpg()

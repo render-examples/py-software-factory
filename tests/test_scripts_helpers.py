@@ -66,20 +66,20 @@ def test_blueprint_contract_checks_current_file() -> None:
 services:
   - type: web
     envVars:
-      - fromGroup: factory-gateway
+      - fromGroup: py-factory-gateway
       - key: DATABASE_URL
         fromDatabase:
-          name: factory-db
+          name: py-factory-db
           property: connectionString
   - type: workflow
     runtime: python
     buildCommand: uv sync --frozen --no-dev
     envVars:
-      - fromGroup: factory-workflows
+      - fromGroup: py-factory-workflows
       - key: RENDER_WORKFLOW_SLUG
-        value: factory-workflows
+        value: py-factory-workflows
 databases:
-  - name: factory-db
+  - name: py-factory-db
     plan: basic-256mb
     ipAllowList: []
 """
@@ -118,7 +118,7 @@ class _GroupApi:
         return None
 
     def env_group_id(self, name: str) -> str | None:
-        assert name == "factory-workflows"
+        assert name == "py-factory-workflows"
         return self.group_id
 
     def env_group_keys(self, group_id: str) -> set[str]:
@@ -132,10 +132,10 @@ def test_doctor_workflows_database_check_points_at_link_step() -> None:
     missing = _workflows_database_check({}, _GroupApi({"RENDER_API_KEY"}))
     assert not missing.ok
     assert "setup-render --link-database --apply" in missing.detail
-    assert "redeploy factory-workflows" in missing.detail
+    assert "redeploy py-factory-workflows" in missing.detail
     present = _workflows_database_check({}, _GroupApi({"DATABASE_URL"}))
     assert present.ok
-    assert present.detail == "set in env group factory-workflows"
+    assert present.detail == "set in env group py-factory-workflows"
     no_group = _workflows_database_check({}, _GroupApi(set(), group_id=None))
     assert not no_group.ok
     assert "apply the Blueprint" in no_group.detail
@@ -183,9 +183,9 @@ class GroupKeys:
 
 
 def test_doctor_reports_which_services_send_traces_without_requiring_it() -> None:
-    api = GroupKeys({"factory-gateway": {"LOGFIRE_TOKEN"}, "factory-workflows": {"DATABASE_URL"}})
+    api = GroupKeys({"py-factory-gateway": {"LOGFIRE_TOKEN"}, "py-factory-workflows": {"DATABASE_URL"}})
     gateway, workflows = _logfire_checks({}, api)
-    assert (gateway.name, gateway.ok, gateway.required) == ("factory-gateway LOGFIRE_TOKEN", True, False)
+    assert (gateway.name, gateway.ok, gateway.required) == ("py-factory-gateway LOGFIRE_TOKEN", True, False)
     assert (workflows.ok, workflows.required) == (False, False)
     assert "sends no traces" in workflows.detail
 
