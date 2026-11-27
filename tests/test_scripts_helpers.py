@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 
 import pytest
 
@@ -87,6 +88,30 @@ databases:
     assert all(check.ok for check in checks), checks
 
 
+def test_blueprint_must_link_env_groups_without_declaring_them() -> None:
+    checks = blueprint_checks(
+        """
+services:
+  - type: web
+    envVars:
+      - fromGroup: py-factory-gateway
+  - type: workflow
+    envVars:
+      - fromGroup: py-factory-workflows
+envVarGroups:
+  - name: py-factory-gateway
+    envVars: []
+"""
+    )
+    [groups] = [check for check in checks if check.name == "secret groups"]
+    assert not groups.ok
+    assert "setup-render --env-groups" in groups.detail
+
+
+def test_render_handoff_creates_env_groups_before_the_blueprint() -> None:
+    assert "--env-groups --apply` before applying the Blueprint" in "\n".join(render_handoff())
+
+
 def test_blueprint_checks_report_invalid_yaml() -> None:
     [check] = blueprint_checks("services: [")
     assert not check.ok
@@ -127,6 +152,9 @@ class _GroupApi:
     def set_env_group_var(self, group_id: str, key: str, value: str) -> None:
         raise AssertionError("doctor never writes")
 
+    def create_env_group(self, name: str, values: Mapping[str, str]) -> str:
+        raise AssertionError("doctor never writes")
+
 
 def test_doctor_workflows_database_check_points_at_link_step() -> None:
     missing = _workflows_database_check({}, _GroupApi({"RENDER_API_KEY"}))
@@ -161,8 +189,6 @@ def test_doctor_database_section_adds_local_url_hint(monkeypatch: pytest.MonkeyP
 
 
 class GroupKeys:
-    """Env groups by name, holding keys; never values."""
-
     def __init__(self, keys: dict[str, set[str]]) -> None:
         self.keys = keys
 
@@ -179,6 +205,9 @@ class GroupKeys:
         return self.keys[group_id.removeprefix("evg-")]
 
     def set_env_group_var(self, group_id: str, key: str, value: str) -> None:
+        raise AssertionError("doctor never writes")
+
+    def create_env_group(self, name: str, values: Mapping[str, str]) -> str:
         raise AssertionError("doctor never writes")
 
 

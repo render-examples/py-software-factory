@@ -52,8 +52,6 @@ def sign(body: bytes, secret: str = SECRET) -> str:
 
 
 class Unreachable:
-    """A database that is down."""
-
     async def query(self, query: Query, params: Params = ()) -> list[Row]:
         raise ConnectionError("database is unreachable")
 
@@ -68,7 +66,7 @@ class Unreachable:
 
 
 class Gateway:
-    def __init__(self, db: Db, secret: str | None = SECRET) -> None:
+    def __init__(self, db: Db, secret: str = SECRET) -> None:
         self.calls: list[tuple[RunName, dict[str, Any], str]] = []
         self.error: Exception | None = None
         app = create_gateway(GatewayDeps(start_run=self.start_run, webhook_secret=secret, db=db))
@@ -96,7 +94,6 @@ class Gateway:
 
 @pytest.fixture
 async def offline() -> AsyncIterator[Gateway]:
-    """A gateway whose database is down, for requests that must be answered before it is consulted."""
     gateway = Gateway(Unreachable())
     yield gateway
     await gateway.client.aclose()
@@ -114,6 +111,18 @@ async def test_serves_health_and_ready(offline: Gateway) -> None:
     ready = await offline.client.get("/ready")
     assert ready.status_code == 200
     assert ready.json() == {"status": "ready"}
+
+
+async def test_without_a_webhook_secret_it_stays_ready_but_refuses_webhooks() -> None:
+    unconfigured = Gateway(Unreachable(), secret="")
+    try:
+        assert (await unconfigured.client.get("/ready")).status_code == 200
+        res = await unconfigured.webhook(json.dumps(triage_payload()).encode(), signature=sign(b"{}", ""))
+        assert res.status_code == 503
+        assert res.json() == {"error": "webhook secret not configured"}
+        assert unconfigured.calls == []
+    finally:
+        await unconfigured.client.aclose()
 
 
 async def test_tells_a_browser_the_headless_gateway_is_running_without_revealing_its_secret(offline: Gateway) -> None:

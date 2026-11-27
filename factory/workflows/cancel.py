@@ -1,5 +1,3 @@
-"""Registered cancellation task: a run like any other on the issue or PR, whose start stops the running trace."""
-
 from __future__ import annotations
 
 from render.workflows import TaskContext

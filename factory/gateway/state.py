@@ -1,5 +1,3 @@
-"""The thread state routing decisions depend on, read from the run projections."""
-
 from __future__ import annotations
 
 from factory.db import Queryable

@@ -1,5 +1,3 @@
-"""RunControl on the Render API: task runs and sandboxes."""
-
 from __future__ import annotations
 
 from typing import Protocol
@@ -10,22 +8,15 @@ from render.client.errors import ClientError
 from factory.sandbox.client import sandbox_client
 
 
-class RunNotFoundError(Exception):
-    """The run no longer exists. Raised by RunControl.get_status for a confirmed 404."""
+class RunNotFoundError(Exception): ...
 
 
 class RunControl(Protocol):
-    """The Render calls that stop a displaced trace, injectable for tests."""
-
-    async def get_status(self, run_id: str) -> str:
-        """The run's status. Raises RunNotFoundError when the run doesn't exist."""
-        ...
+    async def get_status(self, run_id: str) -> str: ...
 
     async def cancel(self, run_id: str) -> None: ...
 
-    async def terminate_sandbox(self, sandbox_id: str) -> None:
-        """Idempotent: a sandbox that no longer exists counts as terminated."""
-        ...
+    async def terminate_sandbox(self, sandbox_id: str) -> None: ...
 
 
 class SandboxTerminator(Protocol):
@@ -33,8 +24,6 @@ class SandboxTerminator(Protocol):
 
 
 class RenderRunControl:
-    """Reads RENDER_API_KEY from the environment."""
-
     def __init__(
         self,
         render: RenderAsync | None = None,

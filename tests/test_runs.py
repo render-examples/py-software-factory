@@ -71,7 +71,6 @@ async def run_as(trace: str, run: str, opts: RunOptions, work: Work = done) -> T
 
 
 async def hold_thread(db: Db, trace: str, run: str | None = None, *, sandbox: str | None = None) -> None:
-    """Starts a run on the thread directly, leaving it running, as a run still in progress elsewhere would."""
     started = await start_on_thread(
         db, StartingRun(KEY, run or trace, trace, "spec-to-pr", "Spec-to-PR", "maintainer", "replace")
     )
@@ -256,8 +255,6 @@ async def test_the_status_view_follows_the_run_and_the_working_label(db: Db) -> 
 
 async def test_concurrent_status_syncs_leave_one_comment(db: Db) -> None:
     class RacingGitHub(FakeGitHub):
-        """Both syncs read the thread before either creates its comment, so both create one."""
-
         both_read = asyncio.Barrier(2)
 
         async def create_comment(self, number: int, body: str) -> IssueComment:

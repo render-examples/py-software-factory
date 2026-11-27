@@ -1,5 +1,3 @@
-"""Cancellation. Starting the cancel run on the thread already stopped what was running; this describes it."""
-
 from __future__ import annotations
 
 from collections.abc import Sequence

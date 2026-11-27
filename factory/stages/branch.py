@@ -1,5 +1,3 @@
-"""Trusted branch names and ownership checks for Spec-to-PR."""
-
 from __future__ import annotations
 
 from datetime import datetime

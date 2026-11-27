@@ -1,5 +1,3 @@
-"""Loading the exact spec a maintainer approved (invariant 9)."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -29,11 +27,6 @@ class ApprovedSpec:
 async def load_approved_spec(
     gh: ApprovalGitHub, issue: int, approval: LabelApproval | AutopilotApproval
 ) -> ApprovedSpec:
-    """Loads the exact approved spec, or raises an ExpectedFailure.
-
-    Manual runs compare the spec comment's last edit with the newest approval label event. Autopilot names the
-    App-authored spec comment, hash, and version the Triage stage produced, and all three must still match.
-    """
     labels = get_config().labels
     found = find_marked_comment(await gh.list_issue_comments(issue), SpecMarker, await gh.bot_login())
     if found is None:

@@ -1,5 +1,3 @@
-"""Gateway entry point: `python -m factory.gateway.main`. Binds 0.0.0.0:$PORT."""
-
 from __future__ import annotations
 
 import json
@@ -15,18 +13,19 @@ from render import RenderAsync
 from factory import tracing
 from factory.config import RunName, require_env
 from factory.db import create_db, migrate
+from factory.events import warn
 from factory.gateway.app import GatewayDeps, create_gateway
 
 GATEWAY_POOL_SIZE = 10
 
 
 def build() -> Any:
-    # Optional at startup: the GitHub App that issues it is created against this gateway's URL, so a first deploy
-    # must serve requests before it exists. Webhooks are refused until it is set.
-    webhook_secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "").strip() or None
+    webhook_secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "").strip()
+    if not webhook_secret:
+        warn("GITHUB_WEBHOOK_SECRET is not set; webhooks get 503 until it is")
     workflow_slug = require_env("RENDER_WORKFLOW_SLUG")
     db = create_db(require_env("DATABASE_URL"), GATEWAY_POOL_SIZE)
-    clients: list[RenderAsync] = []
+    render = RenderAsync()
 
     async def start_run(run: RunName, task_input: dict[str, Any], idempotency_key: str) -> str:
         if not clients:
@@ -56,7 +55,7 @@ def build() -> Any:
 
 def main() -> None:
     port = int(os.environ.get("PORT", "3000"))
-    uvicorn.run(build(), host="0.0.0.0", port=port)  # noqa: S104 - Render routes to 0.0.0.0:$PORT
+    uvicorn.run(build(), host="0.0.0.0", port=port)  # noqa: S104
 
 
 if __name__ == "__main__":

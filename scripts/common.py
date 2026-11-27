@@ -1,5 +1,3 @@
-"""Shared, side-effect-free helpers for setup commands."""
-
 from __future__ import annotations
 
 import json
@@ -21,8 +19,6 @@ SANDBOX_GROUP_RE = re.compile(r"^sbg-[A-Za-z0-9]+$")
 
 @dataclass(frozen=True)
 class Check:
-    """One preflight or doctor result."""
-
     name: str
     ok: bool
     detail: str
@@ -30,7 +26,6 @@ class Check:
 
 
 def parse_env_file(text: str) -> dict[str, str]:
-    """Parse the conservative KEY=VALUE subset accepted by Render's bulk importer."""
     values: dict[str, str] = {}
     for line_number, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
@@ -58,7 +53,6 @@ def parse_env_file(text: str) -> dict[str, str]:
 
 
 def load_environment(path: Path | None, environ: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Merge an optional env file under the real process environment."""
     merged = parse_env_file(path.read_text()) if path and path.exists() else {}
     merged.update(environ or os.environ)
     return merged
@@ -79,7 +73,6 @@ def validate_repository(value: str) -> str:
 
 
 def normalize_gateway_url(value: str) -> str:
-    """Return a public gateway base URL with no query, fragment, or trailing slash."""
     parsed = urlsplit(value.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("gateway URL must be an absolute http(s) URL")
@@ -91,7 +84,6 @@ def normalize_gateway_url(value: str) -> str:
 
 
 def command_check(command: Sequence[str], *, required: bool = True) -> Check:
-    """Run a read-only version command without inheriting secret-bearing stdin."""
     try:
         result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=15)
     except (FileNotFoundError, subprocess.TimeoutExpired) as error:
@@ -117,17 +109,14 @@ def print_checks(checks: Sequence[Check], *, json_output: bool = False) -> int:
 
 
 def redact(text: str, secrets: Iterable[str]) -> str:
-    """Replace every occurrence of each non-empty secret, longest first."""
     for secret in sorted({secret for secret in secrets if secret}, key=len, reverse=True):
         text = text.replace(secret, "[redacted]")
     return text
 
 
 def write_private(path: Path, content: str) -> None:
-    """Write setup output with owner-only permissions."""
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    # O_CREAT's mode only applies to new files; an existing .env may be group-readable.
     os.fchmod(descriptor, 0o600)
     with os.fdopen(descriptor, "w") as handle:
         handle.write(content)

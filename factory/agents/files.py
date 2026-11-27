@@ -1,5 +1,3 @@
-"""The host side of `sandbox/fileops.py`: one request per file operation, run where the files are."""
-
 from __future__ import annotations
 
 import json
@@ -10,13 +8,10 @@ from factory.sandbox import APP_DIR, RUN_AS, RUNNER_TMP, SANDBOX_PYTHON, Sandbox
 
 FILEOPS = f"{APP_DIR}/fileops.py"
 INLINE_COMMAND_BYTES = 96 * 1024
-"""Linux caps one argument at 128 KiB, and the whole command travels as one. Larger requests are uploaded."""
 TIMEOUT_SECONDS = 30
-"""Under the streaming-exec ceiling, so each operation is one request. The helper bounds its searches below it."""
 
 
-class FileOpRefused(Exception):
-    """The helper refused a request the model can correct; the message is for the model."""
+class FileOpRefused(Exception): ...
 
 
 class SandboxFiles:
@@ -27,7 +22,6 @@ class SandboxFiles:
     async def request(self, op: str, **fields: object) -> dict[str, Any]:
         payload = json.dumps({"op": op, "root": self._root, **fields}, separators=(",", ":"))
         inline = f"{SANDBOX_PYTHON} -I {shq(FILEOPS)} {shq(payload)}"
-        # RenderSandbox quotes the command again to run it as the runner user.
         if len(shq(inline).encode()) <= INLINE_COMMAND_BYTES:
             result = await self._sandbox.exec(inline, timeout_seconds=TIMEOUT_SECONDS, as_runner=True)
         else:

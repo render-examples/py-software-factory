@@ -16,7 +16,6 @@ class AcceptanceCriterion(StrictModel):
     id: str = Field(pattern=r"^AC-[1-9]\d*$", max_length=20, description='Criterion IDs look like "AC-1".')
     text: str = Field(min_length=1, max_length=1000)
     verification: Literal["automated", "manual"]
-    """No browser testing at launch: a criterion is checked by tests or the build, or by a person."""
 
 
 class AffectedArea(StrictModel):
@@ -61,24 +60,15 @@ class SpecDraft(StrictModel):
 
 
 SPEC_MAX_JSON_CHARS = 20_000
-"""The spec travels as JSON in its comment's hidden marker; past this size it no longer fits beside the rendered
-spec."""
 
 
 @dataclass
 class SpecValidation:
     errors: list[str] = field(default_factory=list[str])
-    """The spec can't be posted or implemented as is."""
     warnings: list[str] = field(default_factory=list[str])
-    """Worth showing the maintainer, but not blocking."""
 
 
 def validate_spec(spec: Spec, existing_paths: set[str] | frozenset[str] | None = None) -> SpecValidation:
-    """Rules the schema can't express.
-
-    Paths that don't exist yet are warnings, not errors, because a spec may add files; pass `existing_paths`
-    (repository-relative) to check them.
-    """
     result = SpecValidation()
 
     ids = [c.id for c in spec.acceptance_criteria]
@@ -111,7 +101,6 @@ def validate_spec(spec: Spec, existing_paths: set[str] | frozenset[str] | None =
 
 
 def spec_json(spec: Spec) -> str:
-    """The spec as compact JSON, as its marker carries it."""
     return json.dumps(spec.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":"))
 
 

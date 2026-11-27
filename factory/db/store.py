@@ -1,5 +1,3 @@
-"""Appending to the event log."""
-
 from __future__ import annotations
 
 import json
@@ -35,7 +33,6 @@ class VersionConflict(Exception):
 
 
 def encode_payload(event: NewEvent[Any]) -> dict[str, Any]:
-    """The validated payload as stored. Raises ValueError for a payload append would reject."""
     raw = event.payload
     data: object = raw.model_dump(mode="json") if isinstance(raw, Payload) else raw
     payload = event.type.parse(data).model_dump(mode="json", exclude_none=True)
@@ -57,11 +54,6 @@ _INSERT: Final = (
 
 
 async def append(tx: Tx, event: NewEvent[Any], *, expected_version: int | None = None) -> LogEvent | None:
-    """Appends one event and updates the projections, in `tx`.
-
-    Returns None when the idempotency key was already used. Raises VersionConflict when the stream isn't at
-    `expected_version`; the transaction is then aborted and must be retried from the start.
-    """
     payload = encode_payload(event)
     params = (
         event.stream,
@@ -91,7 +83,6 @@ async def append(tx: Tx, event: NewEvent[Any], *, expected_version: int | None =
 async def append_many(
     tx: Tx, stream: str, events: Sequence[NewEvent[Any]], *, expected_version: int | None = None
 ) -> list[LogEvent]:
-    """Appends events to one stream in order; each after the first expects the version the previous one wrote."""
     appended: list[LogEvent] = []
     for event in events:
         logged = await append(

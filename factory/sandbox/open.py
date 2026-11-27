@@ -1,5 +1,3 @@
-"""Restore, validate, refresh, and always clean up task sandboxes."""
-
 from __future__ import annotations
 
 import contextlib
@@ -81,10 +79,6 @@ async def open_sandbox(
     sandbox_group_id: str | None = None,
     deps: OpenSandboxDeps | None = None,
 ) -> OpenedRenderSandbox:
-    """Restore a named snapshot, fetch one trusted ref, scrub, verify, and reinstall if needed.
-
-    A snapshot built with other factory scripts is rebuilt once, so a deployment that changes them heals itself.
-    """
     _check_ref(ref)
     target = f"refs/heads/{ref.name}" if isinstance(ref, BranchRef) else f"pull/{ref.number}@{ref.head_sha}"
     with logfire.span("open sandbox for {repo} at {ref}", repo=repo.full_name, ref=target) as span:
@@ -148,7 +142,6 @@ async def with_sandbox(
     sandbox_group_id: str | None = None,
     deps: OpenSandboxDeps | None = None,
 ) -> AsyncGenerator[OpenedRenderSandbox]:
-    """The lifecycle entry point tasks use so cleanup cannot be forgotten."""
     sandbox = await open_sandbox(
         repo,
         ref,
@@ -197,7 +190,6 @@ async def _create_from_snapshot(
 
 
 async def _build(client: SandboxClient, repo: RepoContext, sandbox_group_id: str, deps: OpenSandboxDeps) -> None:
-    """Build the base-branch snapshot inline, at the tip GitHub reports."""
     sha = await (deps.resolve_base_head or resolve_base_head)(repo)
     await (deps.build_snapshot or build_snapshot)(
         client,
@@ -308,7 +300,6 @@ def _parse_manifest(data: bytes) -> SnapshotManifest:
 
     sha = text("sha")
     lockfile_hash = text("lockfileHash")
-    # Snapshots from before the scripts hash have none; they count as built with other scripts.
     scripts = manifest.get("scriptsHash", "")
     if not SHA1_RE.fullmatch(sha):
         raise RuntimeError("snapshot manifest sha is invalid")

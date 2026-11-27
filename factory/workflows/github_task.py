@@ -1,5 +1,3 @@
-"""Shared registration and validation for GitHub-attached tasks."""
-
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
@@ -60,9 +58,7 @@ class GitHubTaskSpec(Generic[InputT]):
     thread: Callable[[InputT], GitHubThread]
     timeout_seconds: int
     reply_to: Callable[[InputT], str | None] = _no_reply
-    """The waiting run a root run answers; it then starts in reply mode."""
     trigger: Callable[[InputT], Trigger | None] = _no_trigger
-    """The label that started a root run. Labels are commands: it is removed once the run has started."""
 
 
 @dataclass(frozen=True)
@@ -150,7 +146,6 @@ def define_github_task(spec: GitHubTaskSpec[InputT], work: StageWork[InputT, Dat
 
 
 def task_result_json(result: TaskResult[Any]) -> dict[str, Any]:
-    """Only JSON values cross a task boundary; dataclasses never do."""
     return asdict(result)
 
 

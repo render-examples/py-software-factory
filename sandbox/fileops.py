@@ -1,15 +1,3 @@
-"""File operations for the agents' tools, run inside the sandbox as the unprivileged user.
-
-The host sends one JSON request and reads one JSON response, so the only file content that crosses the boundary
-is the window a read returns and the text an edit or write supplies. Paths are resolved here, symlinks included,
-and must stay inside the request's root. Standard library only: the sandbox runs this with its own Python.
-
-Usage: fileops.py <request-json>
-       fileops.py --request-file <path>   (the file is deleted once read)
-Prints {"error": "<message for the model>"} for a request the model can correct, any other object on success,
-and exits 2 with {"fault": "..."} for a malformed request.
-"""
-
 from __future__ import annotations
 
 import json
@@ -30,12 +18,10 @@ MAX_CONTEXT_LINES = 10
 SEARCH_TIMEOUT_SECONDS = 20
 
 
-class Refused(Exception):
-    """A request the model can correct."""
+class Refused(Exception): ...
 
 
-class BadRequest(Exception):
-    """A request the host should never send."""
+class BadRequest(Exception): ...
 
 
 def _text(request: dict[str, Any], key: str, default: str | None = None) -> str:
@@ -60,7 +46,6 @@ def _flag(request: dict[str, Any], key: str) -> bool:
 
 
 def resolve(root: str, path: str, *, for_write: bool = False) -> tuple[str, str]:
-    """The real path of `path` and its form relative to the real root, refusing anything outside the root."""
     if not path or "\0" in path:
         raise Refused("path must be a non-empty string without NUL characters")
     real_root = os.path.realpath(root)
@@ -88,7 +73,6 @@ def _regular_file(target: str, relative: str) -> os.stat_result:
 
 
 def _replace(target: str, data: bytes) -> None:
-    """Write `data` to `target` atomically, keeping an existing file's mode."""
     directory = os.path.dirname(target)
     try:
         mode = stat.S_IMODE(os.stat(target).st_mode)
@@ -170,12 +154,10 @@ def write(root: str, request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _name_filter(glob: str) -> list[str]:
-    """Match file names against `glob` as an ad hoc file type: unlike --glob, types still honor .gitignore."""
     return ["--type-add", f"fileops:{glob}", "--type", "fileops"] if glob else []
 
 
 def _ripgrep(root: str, arguments: list[str]) -> tuple[list[str], bool]:
-    """Run rg, returning its lines with paths relative to the root, and whether they were cut at the cap."""
     try:
         result = subprocess.run(
             ["rg", "--hidden", "--glob", "!.git", "--color", "never", *arguments],

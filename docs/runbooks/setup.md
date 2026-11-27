@@ -8,23 +8,52 @@ dry-run/read-only unless marked **mutating**. Never paste secrets into command h
 1. Configure `factory_config.py` for each `OWNER/REPOSITORY`.
 2. Run `uv sync --locked`, `uv run preflight`, and `make check`.
 3. Run `render blueprints validate render.yaml`. This does not deploy.
-4. Confirm `factory/workflows/app.py` exists and registers the expected tasks before deploying. If it is absent,
-   the current implementation milestone is not deployable.
 
-## 2. Create the Render services
+## 2. Create the sandbox group and environment groups
+
+The Blueprint links the services to two environment groups, `py-factory-gateway` and `py-factory-workflows`, but
+doesn't create them, so they must exist first. Start with the sandbox group, dry run first, then **mutating**:
+
+```bash
+RENDER_API_KEY=... RENDER_WORKSPACE_ID=... uv run setup-render
+RENDER_API_KEY=... RENDER_WORKSPACE_ID=... uv run setup-render --apply-group
+```
+
+Put the resulting `sbg-...` ID in `.env` as `FACTORY_SANDBOX_GROUP_ID`, along with `RENDER_API_KEY`,
+`RENDER_WORKSPACE_ID`, and `ANTHROPIC_API_KEY` (see [configuration.md](../configuration.md)). Then create both groups
+from `.env`, dry run first, then **mutating**:
+
+```bash
+uv run setup-render --env-groups
+uv run setup-render --env-groups --apply
+```
+
+It reads Render credentials from `.env` or the environment, creates each missing group, and sets each of that
+service's keys that has a value, overwriting the group's current value. It never deletes a key, never prints a value,
+and never copies `LOGFIRE_TOKEN`, `DATABASE_URL`, or `RENDER_ADMIN_API_KEY`. Never add `RENDER_ADMIN_API_KEY` to a
+service.
+
+For tracing, create two Logfire write tokens in your Logfire project, one per service, and add them as
+`LOGFIRE_TOKEN` to the `py-factory-gateway` and `py-factory-workflows` groups in the Dashboard. Create them in the
+project's settings, or with `uvx logfire-cli token write` from a directory where `uvx logfire-cli init` has selected
+the project; it prints the new token once, so paste it straight into the Dashboard. Set `LOGFIRE_PROJECT_URL` in
+`.env` before running `--env-groups` so status comments link each run's trace. Decide whether traces include prompts
+and repository content before the first run (see [Observability](../configuration.md#observability-logfire)).
+
+## 3. Create the Render services
 
 Create a Blueprint from the fork's `render.yaml`. Review the proposed resources before applying:
 
 - web service `py-factory-gateway`, Python, `starter`, with `DATABASE_URL` linked from `py-factory-db`
 - Workflow `py-factory-workflows`, Python, with no service-level plan
 - Postgres 17 database `py-factory-db`, `basic-256mb`, with no external access
-- environment groups `py-factory-gateway` and `py-factory-workflows`
 
 The Workflow inherits the repository containing the Blueprint. If Render validation asks for an explicit `repo`
 URL, use the fork URL in the Dashboard rather than committing a canonical repository URL that would break forks.
 
-Wait for the gateway URL before creating the GitHub App. A Blueprint apply/deploy is an external mutation and is
-intentionally not performed by any setup script.
+A Blueprint apply/deploy is an external mutation and is intentionally not performed by any setup script. The gateway
+starts without `GITHUB_WEBHOOK_SECRET` and answers webhooks with 503 until section 4 adds it; wait for its URL before
+creating the GitHub App.
 
 Then give the Workflow the database URL. A Blueprint can't link a database to a Workflow service, so copy the
 gateway's value into the `py-factory-workflows` group. Dry run first, then **mutating**:
@@ -37,7 +66,7 @@ RENDER_API_KEY=... RENDER_WORKSPACE_ID=... uv run setup-render --link-database -
 Redeploy `py-factory-workflows` so it picks up the value. The command never prints it. See
 [Database](../configuration.md#database).
 
-## 3. Register the GitHub App
+## 4. Register the GitHub App
 
 Generate a manifest and local POST form:
 
@@ -57,33 +86,17 @@ uv run setup-app --exchange-code CODE --credentials-output tmp/github-app.env
 ```
 
 This exchange is **mutating** and consumes the one-time code. The output file is mode 0600 and contains the App ID,
-private key, and webhook secret. Transfer values to Render, then securely delete the file.
+private key, and webhook secret. Copy them into the groups, dry run first, then **mutating**:
+
+```bash
+uv run setup-render --env-groups --env-file tmp/github-app.env
+uv run setup-render --env-groups --env-file tmp/github-app.env --apply
+```
+
+Then securely delete the file and redeploy both services so they see the new values.
 
 Install the App on only the configured repositories. The manifest subscribes to `issues`, `issue_comment`,
 `pull_request`, and `push`, with contents/write, issues/write, members/read, metadata/read, and pull-requests/write.
-
-## 4. Configure Render
-
-Run the read-only/dry-run handoff:
-
-```bash
-RENDER_API_KEY=... RENDER_WORKSPACE_ID=... uv run setup-render
-```
-
-Create the sandbox group explicitly:
-
-```bash
-RENDER_API_KEY=... RENDER_WORKSPACE_ID=... uv run setup-render --apply-group
-```
-
-Put the resulting `sbg-...` ID in `FACTORY_SANDBOX_GROUP_ID` on `py-factory-workflows`. Populate both environment
-groups exactly as described in [configuration.md](../configuration.md). Never add `RENDER_ADMIN_API_KEY` to a
-service.
-
-For tracing, create two Logfire write tokens in your Logfire project, one per service, and add them as
-`LOGFIRE_TOKEN` to the `py-factory-gateway` and `py-factory-workflows` groups. Add the project's URL as
-`LOGFIRE_PROJECT_URL` to `py-factory-workflows` so status comments link each run's trace. Decide whether traces include prompts and
-repository content before the first run (see [Observability](../configuration.md#observability-logfire)).
 
 ## 5. Configure repositories
 
@@ -113,7 +126,8 @@ uv run doctor --remote \
   --env-file .env
 ```
 
-Also verify in Render that all expected Workflow tasks registered.
+Also verify in Render that `py-factory-workflows` registered all six tasks: `triage`, `spec-to-pr`, `pr-review`,
+`autopilot`, `cancel`, and `refresh-snapshot`.
 
 `doctor --remote` checks that `py-factory-workflows` holds `DATABASE_URL` and reports which groups hold `LOGFIRE_TOKEN`
 (by name only), and that the database connects and is migrated. For the connection, put `py-factory-db`'s external URL in `.env` as `DATABASE_URL` and allow your IP on
@@ -125,24 +139,3 @@ and `threads` tables and, with tracing on, as one Logfire trace from the gateway
 
 The first run after a deploy that changes any `sandbox/` script rebuilds the repository snapshot inline, so it takes
 several minutes longer.
-
-## Upgrading an existing deployment
-
-A deployment from before the event log has no database, and its services deploy on `checksPass`, so merging code
-deploys both. Land the database plumbing first, in this order:
-
-1. **Blueprint first.** Merge only the `render.yaml` changes and sync the Blueprint. This creates `py-factory-db` and
-   gives the gateway `DATABASE_URL`. The current gateway code ignores it.
-2. **Link Workflows.** Run `setup-render --link-database --apply`, redeploy `py-factory-workflows`, and confirm with
-   `doctor --remote`.
-3. **Drain.** Wait until nothing is running, or cancel runs from the Render Dashboard. Runs started under the old
-   status-comment claim aren't in Postgres, so a new run can't stop them.
-4. **Merge the event log and Postgres runs.** Workflows migrates on its first task. Coordination moves to Postgres;
-   the gateway still routes by label.
-5. **Merge gateway decisions.** The gateway migrates at startup. Labels become commands, and replies resume only
-   waiting runs.
-6. **Re-trigger waiting issues.** Issues that asked questions before the upgrade have no waiting run. Re-apply
-   `factory:triage` or `factory:autopilot` on any that still need answers, and tell maintainers.
-
-Rolling back gateway decisions restores label routing safely. Rolling back Postgres runs after runs have been
-recorded loses nothing, but brings back the status-comment claim's races.

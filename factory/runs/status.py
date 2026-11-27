@@ -1,6 +1,3 @@
-"""The status comment and `factory:working` label: a view of the thread's runs, synced from Postgres. Nothing reads
-them back to decide anything."""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -15,7 +12,6 @@ from factory.threads import GitHubThread, ThreadKey, github_thread
 from factory.tracing import trace_link
 
 WORKING_LABEL = "factory:working"
-"""On the issue or PR while any run of its current trace is running."""
 
 
 class StatusGitHub(Protocol):
@@ -41,8 +37,6 @@ class StatusView:
 async def sync_status(
     db: Db, gh: StatusGitHub, repo: str, thread: GitHubThread, shown: str | None = None
 ) -> str | None:
-    """Shows the thread's current run: the run that started last while it runs, otherwise the trace's root.
-    Returns the body shown, so the caller can skip identical rewrites."""
     key = github_thread(repo, thread)
     rows = await db.query(
         "select t.status_comment_id as comment_id, t.trace_id, "
@@ -73,7 +67,6 @@ async def sync_status(
 
 
 async def show_rejection(db: Db, gh: StatusGitHub, repo: str, thread: GitHubThread, view: StatusView) -> None:
-    """Comments on a rejected trigger only when the thread has no other runs, so strangers can't spam a busy one."""
     rows = await db.query(
         "select not exists (select 1 from runs where thread = $1 and run_id <> $2) as first",
         (github_thread(repo, thread), view.run_id),
@@ -83,7 +76,6 @@ async def show_rejection(db: Db, gh: StatusGitHub, repo: str, thread: GitHubThre
 
 
 def status_body(view: StatusView, trace: str | None = None) -> str:
-    """`trace` links the Logfire trace of the run writing the comment, which is the run the comment shows."""
     detail = f": {view.summary}" if view.summary else ""
     line = {
         "running": f"**{view.title}** is running (run `{view.run_id}`){detail}",
@@ -132,7 +124,6 @@ async def _write_comment(gh: StatusGitHub, number: int, comment_id: int | None, 
 async def _save_comment(
     db: Db, gh: StatusGitHub, thread: ThreadKey, replaced: int | None, created: int, body: str
 ) -> None:
-    """Records the comment only if no concurrent sync recorded one first; the loser deletes its duplicate."""
     saved = await db.query(
         "update threads set status_comment_id = $1 where thread = $2 "
         "and status_comment_id is not distinct from $3::bigint returning thread",

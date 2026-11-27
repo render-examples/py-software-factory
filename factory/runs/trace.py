@@ -8,12 +8,8 @@ from render.workflows.context import TaskRunMetadata
 
 @dataclass(frozen=True)
 class RunIdentity:
-    """Which Workflows task run is acting."""
-
     trace_id: str
-    """The root task run."""
     run_id: str
-    """This task run."""
 
     @property
     def is_root(self) -> bool:
@@ -21,8 +17,6 @@ class RunIdentity:
 
 
 def task_identity(metadata: TaskRunMetadata | None) -> RunIdentity:
-    """The trace is the root task run; local runs without metadata get a random one, which also serves as the run
-    ID."""
     task_run_id = metadata.task_run_id if metadata else None
     root = metadata.root_task_run_id if metadata else None
     trace_id = root or task_run_id or str(uuid.uuid4())

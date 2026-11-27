@@ -1,5 +1,5 @@
 [project]
-name = "py-software-factory"
+name = "pydantic-software-factory"
 version = "0.1.0"
 description = "A GitHub-native software factory on Render, with Pydantic AI agents in Render Sandboxes"
 readme = "README.md"
@@ -46,7 +46,6 @@ packages = ["factory", "scripts"]
 only-include = ["factory", "scripts", "factory_config.py"]
 
 [tool.logfire]
-# Scripts and tests run without configuring Logfire; their spans are no-ops.
 ignore_no_config = true
 
 [tool.ruff]
@@ -56,18 +55,14 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "S", "SIM", "RUF", "ASYNC", "PT"]
 ignore = [
-    # Exception names follow the TypeScript factory's (ExpectedFailure).
     "N818",
-    # Tests assert; sandbox commands are built from quoted, trusted values.
     "S101",
     "S603",
     "S607",
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Queries join module-level column lists; every value is a bound parameter.
 "factory/db/**" = ["S608"]
-# Tests drive local git and files from async fakes.
 "tests/**" = ["S105", "S106", "S108", "S311", "ASYNC221", "ASYNC240"]
 
 [tool.pyright]

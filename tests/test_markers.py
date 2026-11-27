@@ -38,7 +38,6 @@ class TestMarkers:
         assert parse_marker(marker, SpecMarker) == SpecMarker(spec=spec, hash=content_hash(spec), version=2)
 
     def test_hashes_as_the_typescript_factory_does(self) -> None:
-        """Either implementation must accept the other's spec markers. Expected value from the TS contentHash."""
         value = {"b": [1, "é", None, True, 'line\nbreak \u2028 "q" \\ \u0001'], "a": {"y": 1.0, "x": "😀"}, "Z": 2.5}
         assert content_hash(value) == "50850f82a71d98ddaa6be8e2a1f599b49b1b17ceeebe8a1fdbfa3f38ad627206"
 

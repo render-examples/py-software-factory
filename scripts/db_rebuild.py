@@ -1,5 +1,3 @@
-"""Replay the event log into its projections. Run after a projection change that alters derived rows."""
-
 from __future__ import annotations
 
 import asyncio

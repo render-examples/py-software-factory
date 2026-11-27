@@ -64,7 +64,6 @@ def _database_section(environment: dict[str, str]) -> list[Check]:
 
 
 def _workflows_database_check(environment: dict[str, str], api: RenderEnvApi | None = None) -> Check:
-    """Confirm the workflows group holds DATABASE_URL by name; its value is never read into output."""
     name = "workflows DATABASE_URL"
     try:
         if api is None:
@@ -81,7 +80,6 @@ def _workflows_database_check(environment: dict[str, str], api: RenderEnvApi | N
 
 
 def _logfire_checks(environment: dict[str, str], api: RenderEnvApi | None = None) -> list[Check]:
-    """Whether each service's env group holds LOGFIRE_TOKEN, by name only. Tracing is optional, so never required."""
     try:
         if api is None:
             api = GeneratedRenderApi.from_environment(environment)

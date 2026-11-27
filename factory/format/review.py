@@ -10,7 +10,6 @@ from factory.github.types import InlineComment
 from factory.schemas import SEVERITIES, Review, ReviewComment, Severity
 
 _MAX_INLINE_COMMENTS = 50
-"""Inline comments posted with one review; the rest go in the body."""
 _INLINE_BODY_MAX_CHARS = 8_000
 
 
@@ -19,7 +18,6 @@ class ReviewPayload:
     body: str
     comments: list[InlineComment]
     event: Literal["COMMENT"] = "COMMENT"
-    """The only review event the factory posts: it never approves or requests changes."""
 
 
 def render_review(
@@ -28,12 +26,6 @@ def render_review(
     verification: Sequence[VerifyResult] | None = None,
     is_commentable: Callable[[str, int], bool] | None = None,
 ) -> ReviewPayload:
-    """The review as a COMMENT review: a body and at most 50 inline comments, most severe first.
-
-    `verification` is the workflow's verify run at the PR head. `is_commentable` says whether GitHub accepts an
-    inline comment at a line of the PR's diff (it rejects the whole review otherwise); comments it refuses move to
-    the body. Without it, every comment is posted inline.
-    """
     ordered = sorted(review.comments, key=lambda c: SEVERITIES.index(c.severity))
 
     inline: list[ReviewComment] = []

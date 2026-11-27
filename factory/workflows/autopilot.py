@@ -1,6 +1,3 @@
-"""Autopilot parent task: Triage and Spec-to-PR as child tasks, then PR Reviewer as its own run on the pull
-request."""
-
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
@@ -42,11 +39,9 @@ class AutopilotData(TypedDict):
 ChildTask = TaskDefinition[..., dict[str, Any]]
 ChildRunner = Callable[[ChildTask, dict[str, Any]], Awaitable[dict[str, Any]]]
 StartTask = Callable[[str, dict[str, Any], str], Awaitable[str]]
-"""Starts a registered task as a new root run with an idempotency key, and returns its run ID."""
 
 
 async def start_task(task: str, task_input: dict[str, Any], idempotency_key: str) -> str:
-    """Reads RENDER_API_KEY and RENDER_WORKFLOW_SLUG."""
     slug = f"{require_env('RENDER_WORKFLOW_SLUG')}/{task}"
     return (await RenderAsync().workflows.start_task(slug, [task_input], idempotency_key=idempotency_key)).id
 

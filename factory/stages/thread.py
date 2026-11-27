@@ -1,5 +1,3 @@
-"""Issue-thread parsing and prompt construction for Triage."""
-
 from __future__ import annotations
 
 import json

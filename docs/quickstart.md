@@ -12,7 +12,12 @@ make check
 ```
 
 `preflight` does not call Render or GitHub. Missing secrets are warnings unless `--require-secrets` is supplied.
-The test suite uses fakes and does not spend model tokens.
+`make check` runs ruff, shellcheck, pyright (strict), and pytest.
+
+The test suite fakes GitHub, Render, and the model, so it spends no model tokens. It still runs the real agent tool
+loop, `sandbox/fileops.py`, and shell commands against a local checkout, and the publish tests run
+`sandbox/collect-changes.sh` against a local git repository, so it needs `git` and `bash`; search tests also use `rg`
+when it's installed.
 
 ## Local Postgres
 
@@ -46,6 +51,7 @@ All commands are installed by `uv sync`:
 ```bash
 uv run setup-app --gateway-url https://YOUR-GATEWAY.onrender.com
 uv run setup-render
+uv run setup-render --env-groups
 uv run setup-render --link-database
 uv run setup-github OWNER/REPOSITORY
 uv run doctor
@@ -65,8 +71,9 @@ render blueprints validate render.yaml
 
 The Blueprint defines exactly two Python services, `py-factory-gateway` (web) and `py-factory-workflows` (Workflow), and one
 Postgres database, `py-factory-db`, linked to the gateway. There is no service-level plan on the Workflow. The build uses
-the checked-in uv lock. After applying the Blueprint, run `setup-render --link-database --apply` so the Workflow gets
-`DATABASE_URL` too.
+the checked-in uv lock. It links each service to an environment group without creating it, so run
+`setup-render --env-groups --apply` before applying it, and `setup-render --link-database --apply` afterwards so the
+Workflow gets `DATABASE_URL` too.
 
 Blueprint validation does not start the Workflow or prove task registration. Do not describe it as a successful
 deployment; complete the live checks in the setup runbook.

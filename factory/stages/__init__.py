@@ -1,5 +1,3 @@
-"""Plain stage functions shared by the single-stage tasks and the Autopilot parent task."""
-
 from factory.stages.approval import ApprovedSpec, load_approved_spec
 from factory.stages.cancel import cancel_outcome
 from factory.stages.diff_lines import commentable, parse_diff_lines, patch_lines, pull_diff_lines

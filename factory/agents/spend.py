@@ -1,5 +1,3 @@
-"""Spend budgets as a Pydantic AI Harness capability. The caller supplies the store, so agents never touch Postgres."""
-
 from __future__ import annotations
 
 from pydantic_ai import RunContext
@@ -15,7 +13,6 @@ def _repository(ctx: RunContext[AgentDeps]) -> str:
 
 
 def spend_limits(settings: SpendSettings, store: BatchSpendStore) -> SpendLimits[AgentDeps] | None:
-    """The configured budgets, or None when every one is disabled."""
     budgets: list[Budget[AgentDeps]] = []
     if settings.agent_run_usd is not None:
         budgets.append(Budget(usd=settings.agent_run_usd, window="run", name="agent_run"))

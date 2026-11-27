@@ -6,8 +6,6 @@ AgentErrorCode = Literal["timeout", "max_turns", "spend_limit", "invalid_submiss
 
 
 class AgentError(Exception):
-    """Every way an agent run can fail. The message can quote repository output, so it never goes to GitHub."""
-
     def __init__(self, agent_id: str, code: AgentErrorCode, message: str) -> None:
         super().__init__(message)
         self.agent_id = agent_id

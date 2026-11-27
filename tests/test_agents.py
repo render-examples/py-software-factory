@@ -1,6 +1,3 @@
-"""Agents end to end: the real Pydantic AI loop, Harness capabilities, and sandbox/fileops.py, with a scripted model and
-a sandbox that runs commands locally."""
-
 from __future__ import annotations
 
 import json
@@ -47,8 +44,6 @@ except subprocess.TimeoutExpired:
 
 
 class LocalSandbox:
-    """Runs commands with bash in a local checkout that stands in for REPO_DIR, using this repo's fileops.py."""
-
     id = "sandbox-1"
 
     def __init__(self, repo: Path) -> None:
@@ -58,7 +53,6 @@ class LocalSandbox:
         self.uploads: dict[str, bytes] = {}
         self.path = os.environ["PATH"]
         if shutil.which("timeout") is None:
-            # The sandbox has coreutils; this machine may not. Same arguments and exit 124 on expiry.
             tools = self.scratch / "bin"
             tools.mkdir(parents=True, exist_ok=True)
             (tools / "timeout").write_text(TIMEOUT_SHIM.replace("PYTHON", sys.executable))
@@ -73,7 +67,6 @@ class LocalSandbox:
             .replace(SCRATCH_DIR, str(self.scratch))
             .replace(AS_RUNNER, "")
         )
-        # There is no runner user locally to hand a staged request to.
         return re.sub(rf"^chown {re.escape(shq(RUN_AS))}: \S+ && ", "", local)
 
     async def exec(self, command: str, *, timeout_seconds: float | None = None, as_runner: bool = False) -> ExecResult:
@@ -105,7 +98,6 @@ Step = Callable[[list[ModelMessage], AgentInfo], ModelResponse]
 
 
 def scripted(*calls: tuple[str, dict[str, Any]]) -> tuple[FunctionModel, list[str]]:
-    """A model that makes `calls` in order, then submits; returns it and the tool results it saw."""
     seen: list[str] = []
 
     def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -217,7 +209,6 @@ async def test_implementer_edits_files_inside_the_sandbox(repo: Path) -> None:
     assert seen[2] == "Created src/new/module.py (10 bytes)."
     if shutil.which("rg"):
         assert "src/app.py:2:    return 'hi'" in seen[3]
-    # Every file operation is one command, run as the runner user; no file was downloaded.
     file_calls = [call for call in sandbox.calls if FILEOPS in call[0]]
     assert len(file_calls) == 4
     assert all(as_runner for _, _, as_runner in file_calls)
@@ -268,7 +259,7 @@ async def test_workspace_runs_commands_as_the_runner_with_bounded_timeouts(repo:
     sandbox = LocalSandbox(repo)
     workspace = SandboxWorkspace(sandbox)
     assert await workspace.working_dir() == REPO_DIR
-    result = await workspace.run(  # noqa: S604 - the sandbox shell under test
+    result = await workspace.run(  # noqa: S604
         "echo $GREETING",
         shell=True,
         env={"GREETING": "hello world"},

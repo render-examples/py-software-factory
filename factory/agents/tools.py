@@ -1,5 +1,3 @@
-"""What an agent can do in its sandbox: file tools that run in the sandbox, plus Pydantic AI Harness capabilities."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -31,8 +29,6 @@ READ_ONLY_COMMANDS = (
     "tree",
     "jq",
 )
-"""What read-only agents may start. Best effort, like any command filter: the sandbox is the boundary, and nothing a
-read-only agent changes there is published."""
 SHELL_TIMEOUT_SECONDS = 30
 SHELL_OUTPUT_CHARS = 30_000
 TOOL_RETRIES = 3
@@ -42,12 +38,10 @@ TOOL_RETRIES = 3
 class AgentDeps:
     files: SandboxFiles
     repo: str
-    """"owner/name": the repository budgets are counted per."""
 
 
 class TextEdit(BaseModel):
     old_text: str
-    """Text that occurs exactly once in the file."""
     new_text: str
 
 

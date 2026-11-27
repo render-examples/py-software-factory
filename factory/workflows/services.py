@@ -1,9 +1,3 @@
-"""Dependency composition for tasks.
-
-Tests install fakes. Production integration supplies the agent/sandbox adapters without making their evolving
-modules import-time requirements of the orchestration layer.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
@@ -29,7 +23,6 @@ _services: WorkflowServices | None = None
 
 
 def configure_services(services: WorkflowServices | None) -> None:
-    """Install adapters at service startup, or fake adapters in tests."""
     global _services
     _services = services
 
@@ -41,7 +34,6 @@ def get_services() -> WorkflowServices:
 
 
 def _production_services() -> WorkflowServices:
-    """Import evolving agent/sandbox APIs only when a task actually starts."""
     from typing import Any, cast
 
     from pydantic import BaseModel
@@ -62,9 +54,7 @@ def _production_services() -> WorkflowServices:
     async def agent(
         definition: AgentDefinition, run: Run, message: str, sandbox: Sandbox, timeout_seconds: float = 30 * 60
     ) -> BaseModel:
-        """Runs an agent with the configured spend budgets, counted in py-factory-db on the Workflows pool."""
         pool = await workflows_db().pool()
-        # The store takes an asyncpg pool; asyncpg's stubs and its protocol disagree on acquire()'s return type.
         store = stores.setdefault(id(pool), PostgresSpendStore(cast(Any, pool)))
         return await run_agent(
             definition,

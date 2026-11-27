@@ -1,5 +1,3 @@
-"""Map GitHub unified diffs to commentable lines on the right side."""
-
 from __future__ import annotations
 
 import re

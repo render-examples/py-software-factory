@@ -1,5 +1,3 @@
-"""Parsing and checking the changes file `collect-changes.sh` writes. Nothing in it is trusted until checked."""
-
 from __future__ import annotations
 
 import hashlib
@@ -30,9 +28,7 @@ class ChangedFile:
     status: ChangeStatus
     path: str
     mode: str
-    """The new mode; "000000" for a deletion."""
     sha: str | None
-    """The new blob SHA; None for a deletion."""
 
 
 @dataclass(frozen=True)
@@ -53,10 +49,7 @@ class PublishLimits:
 
 @dataclass(frozen=True)
 class ChangesFile:
-    """The sections of the changes file, split but not yet trusted."""
-
     tree_sha: str
-    """The sandbox's `git write-tree` of the staged working tree."""
     count: int
     diff: bytes
     sizes: bytes
@@ -75,12 +68,10 @@ class Refused:
     refused: list[Refusal]
 
 
-class ChangesFileError(ValueError):
-    """The changes file doesn't have the exact layout or content it claims. Never a refusal: the sandbox lied."""
+class ChangesFileError(ValueError): ...
 
 
 def blob_sha(content: bytes) -> str:
-    """Git's object ID for a blob: sha1("blob <size>\\0<content>")."""
     return hashlib.sha1(b"blob %d\0" % len(content) + content, usedforsecurity=False).hexdigest()
 
 
@@ -89,7 +80,6 @@ def _text(data: bytes, limit: int = 60) -> str:
 
 
 def parse_changes_file(buf: bytes) -> ChangesFile:
-    """Splits the output file into its sections. Raises on anything but the exact layout."""
     pos = 0
 
     def line() -> bytes:
@@ -147,7 +137,6 @@ class _RawChange:
 
 
 def _parse_raw_diff(diff: bytes) -> list[_RawChange]:
-    """Parses `git diff-tree -r -z --no-renames --no-abbrev` output strictly, keeping each path's raw bytes."""
     files: list[_RawChange] = []
     pos = 0
 
@@ -185,7 +174,6 @@ def _parse_raw_diff(diff: bytes) -> list[_RawChange]:
 
 
 def _parse_sizes(sizes: bytes) -> dict[str, int]:
-    """Parses "<sha> <size>\\n" lines."""
     result: dict[str, int] = {}
     if not sizes:
         return result
@@ -200,7 +188,6 @@ def _parse_sizes(sizes: bytes) -> dict[str, int]:
 
 
 def _parse_blobs(blobs: bytes, expected: dict[str, int]) -> dict[str, bytes]:
-    """Parses `git cat-file --batch` output and checks every object's bytes against its SHA."""
     result: dict[str, bytes] = {}
     pos = 0
     while pos < len(blobs):
@@ -232,7 +219,6 @@ def _parse_blobs(blobs: bytes, expected: dict[str, int]) -> dict[str, bytes]:
 
 
 def _unsafe_path(path: str, raw_path: bytes) -> str | None:
-    """Why a path can't be published, or None. Paths come from git, but the sandbox could forge them."""
     if path.encode() != raw_path:
         return "is not valid UTF-8"
     if _CONTROL.search(path):
@@ -248,11 +234,6 @@ def _unsafe_path(path: str, raw_path: bytes) -> str | None:
 
 
 def check_changes(file: ChangesFile, limits: PublishLimits) -> CheckedChanges | Refused:
-    """Applies every publishing rule to the parsed file.
-
-    Rules are re-derived here from the diff and sizes rather than trusted from the sandbox; blob bytes are checked
-    only when nothing is refused.
-    """
     if file.count > limits.max_changed_files:
         detail = f"{file.count} files changed; the limit is {limits.max_changed_files}"
         return Refused([Refusal("too_many_files", detail, count=file.count, limit=limits.max_changed_files)])

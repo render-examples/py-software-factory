@@ -1,5 +1,3 @@
-"""The factory's deployment settings. See docs/configuration.md."""
-
 from decimal import Decimal
 
 from factory.config_model import (

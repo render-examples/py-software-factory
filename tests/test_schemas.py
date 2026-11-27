@@ -164,7 +164,6 @@ class TestReviewContracts:
 
 @pytest.mark.parametrize("model", [TriageDecision, Spec, SpecDraft, Implementation, Review])
 def test_every_agent_output_is_strict_and_bounded(model: type[BaseModel]) -> None:
-    """Unknown keys are rejected, and every string and array in the output schema has an upper bound."""
     schema = model.model_json_schema(by_alias=True)
     unbounded: list[str] = []
 

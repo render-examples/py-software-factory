@@ -1,8 +1,3 @@
-"""Postgres on asyncpg: a lazily opened pool, plain queries, transactions, and migration scripts.
-
-The same pool backs Pydantic AI Harness's spend store, which takes an asyncpg pool.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -30,18 +25,12 @@ class Queryable(Protocol):
 
 
 class Tx(Queryable, Protocol):
-    """A connection inside an open transaction."""
-
-    async def script(self, statements: str) -> None:
-        """Runs trusted, parameterless SQL that may hold several statements, such as a migration file."""
-        ...
+    async def script(self, statements: str) -> None: ...
 
 
 class Db(Queryable, Protocol):
     def transaction(self) -> AbstractAsyncContextManager[Tx]: ...
-    async def pool(self) -> asyncpg.Pool:
-        """The open pool, for libraries that take an asyncpg pool."""
-        ...
+    async def pool(self) -> asyncpg.Pool: ...
 
     async def aclose(self) -> None: ...
 
@@ -63,7 +52,6 @@ async def _json_codecs(connection: asyncpg.Connection) -> None:
 
 
 def connect_options(url: str) -> tuple[str, ssl.SSLContext | None]:
-    """libpq's `sslrootcert=system` (verify against the system trust store) as an asyncpg TLS context."""
     parts = urlsplit(url)
     query = parse_qsl(parts.query, keep_blank_values=True)
     if ("sslrootcert", "system") not in query:
@@ -76,8 +64,6 @@ OnOpen = Callable[[Db], Awaitable[None]]
 
 
 class PoolDb:
-    """Opens on first use. A failed first connection raises the server's error, not a pool timeout."""
-
     def __init__(self, url: str, max_size: int, *, on_open: OnOpen | None = None) -> None:
         self._url = url
         self._max_size = max_size
@@ -136,8 +122,6 @@ class PoolDb:
 
 
 class _Opened:
-    """The pool as `on_open` sees it: already open, so it must not wait for itself to open."""
-
     def __init__(self, db: PoolDb) -> None:
         self._db = db
 
@@ -166,7 +150,6 @@ WORKFLOWS_POOL_SIZE = 3
 
 
 def workflows_db() -> Db:
-    """The Workflows service's pool for the running event loop. It applies pending migrations when it opens."""
     from factory.db.migrate import migrate
 
     loop = asyncio.get_running_loop()

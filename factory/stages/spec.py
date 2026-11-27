@@ -1,5 +1,3 @@
-"""Spec drafting, validation, and publication."""
-
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
@@ -33,7 +31,6 @@ SpecWriter = Callable[[str, SpecSandbox], Awaitable[SpecDraft]]
 
 
 async def draft_spec(writer: SpecWriter, sandbox: SpecSandbox, message: str) -> tuple[SpecDraft, list[str]]:
-    """Draft a spec and allow one validation-driven correction."""
     result = await sandbox.exec("git ls-files -z", timeout_seconds=60, as_runner=True)
     if result.exit_code != 0:
         raise RuntimeError(f"git ls-files exited {result.exit_code}: {result.stderr.strip()[-500:]}")

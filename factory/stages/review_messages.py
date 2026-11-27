@@ -1,5 +1,3 @@
-"""Build the PR reviewer's untrusted-data-aware prompt."""
-
 from __future__ import annotations
 
 from factory.format import fenced, truncate

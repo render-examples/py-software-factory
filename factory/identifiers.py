@@ -1,5 +1,3 @@
-"""Pure validation for trusted GitHub repository and branch identifiers."""
-
 from __future__ import annotations
 
 import re
@@ -9,7 +7,6 @@ _REPOSITORY_SEGMENT = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def is_safe_branch(branch: str) -> bool:
-    """Whether a branch is safe as a Git ref, revision, and shell argument."""
     return (
         len(branch) <= 200
         and _BRANCH.fullmatch(branch) is not None
@@ -21,7 +18,6 @@ def is_safe_branch(branch: str) -> bool:
 
 
 def is_valid_repo_name(repository: str) -> bool:
-    """Whether a repository is exactly two safe ASCII `owner/name` segments."""
     segments = repository.split("/")
     return (
         len(segments) == 2

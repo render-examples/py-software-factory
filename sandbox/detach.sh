@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Starts one bounded command independently of the short Sandbox exec stream.
-# Usage: detach.sh /tmp/factory-detached-<hex> <timeout_seconds> <command> [args...]
 set -euo pipefail
 
 run_dir=${1:?usage: detach.sh <run_dir> <timeout_seconds> <command> [args...]}
