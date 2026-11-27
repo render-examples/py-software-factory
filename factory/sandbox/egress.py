@@ -1,4 +1,4 @@
-"""Sandbox egress policies built only from trusted repository and provider configuration."""
+"""Sandbox egress policies built only from trusted repository configuration."""
 
 from __future__ import annotations
 
@@ -15,13 +15,13 @@ PYPI_HOSTS = ("pypi.org", "files.pythonhosted.org")
 GITHUB_RELEASE_ASSET_HOST = "release-assets.githubusercontent.com"
 
 
-def task_egress(repo: RepoContext, model_hosts: Iterable[str] = ()) -> NetworkPolicy:
-    """Policy for a task sandbox; provider hosts are explicit inputs from the provider registry."""
-    return _policy(repo, (GITHUB_HOST, *model_hosts))
+def task_egress(repo: RepoContext) -> NetworkPolicy:
+    """Policy for a task sandbox. No model provider is reachable: agent loops run on the host."""
+    return _policy(repo, (GITHUB_HOST,))
 
 
 def builder_egress(repo: RepoContext) -> NetworkPolicy:
-    """Policy for snapshot creation, where uv, Python, and runner dependencies are installed."""
+    """Policy for snapshot creation, where uv and Python are installed."""
     return _policy(
         repo,
         (

@@ -7,9 +7,9 @@ from typing import Any, Protocol, cast
 from urllib.parse import quote
 
 from factory.changeset import Refusal
-from factory.claims import ExpectedFailure
 from factory.format import sanitize_inline
 from factory.github import GitCommit, GitIdentity
+from factory.runs import ExpectedFailure
 from factory.schemas import Spec
 
 
@@ -67,7 +67,7 @@ async def owned_commits(git: BranchGit, branch: str, base_sha: str, identity: Gi
     if not ours:
         raise ExpectedFailure(
             f"the branch `{branch}` has commits the factory didn't make, so it was left alone. "
-            "Delete or rename the branch and reapply the label to retry.",
+            "Delete or rename the branch and apply the label again to retry.",
             "branch_taken",
         )
     return [tip]

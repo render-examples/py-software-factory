@@ -8,9 +8,9 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from factory.claims import ExpectedFailure
 from factory.config import get_config
 from factory.github import IssueComment, LabelEvent, SpecMarker, find_marked_comment
+from factory.runs import ExpectedFailure
 from factory.schemas import AutopilotApproval, LabelApproval, Spec
 
 
@@ -49,7 +49,8 @@ async def load_approved_spec(
         approved_at = datetime.fromisoformat(events[-1].created_at) if events else approval.labeled_at
         if datetime.fromisoformat(comment.updated_at) > approved_at:
             raise ExpectedFailure(
-                f"the spec changed after it was approved. Review it and reapply the `{labels.spec_approved}` label.",
+                f"the spec changed after it was approved. Review it, then apply the `{labels.spec_approved}` label "
+                "again to approve this version.",
                 "spec_changed",
             )
     elif (comment.id, marker.hash, marker.version) != (approval.comment_id, approval.hash, approval.version):

@@ -1,24 +1,30 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
 from typing import Any, cast
 
+import logfire
 import pytest
+from logfire.testing import CaptureLogfire
+from opentelemetry import trace
 from render import TaskContext
 from render.workflows.context import TaskRunMetadata
 
-from factory.agents.registry import IMPLEMENTER
-from factory.claims import Claim, ClaimOptions, Outcome, RunControl, RunIdentity, TaskResult
 from factory.config import require_repo
-from factory.github import Actor, GitHubClient, IssueComment, Permission, StatusMarker, render_marker
+from factory.db import Db
+from factory.github import GitHubClient, Permission
+from factory.runs import WORKING_LABEL, Outcome, Run, RunIdentity, RunOptions, StatusView, TaskResult, status_body
+from factory.runs.thread import StartingRun, start_on_thread
 from factory.schemas import AutopilotInput, TriageInput
-from factory.stages import cancel_stage
+from factory.schemas.tasks import TraceContext
+from factory.threads import GitHubThread, github_thread
+from factory.tracing import trace_link
 from factory.workflows.app import app
 from factory.workflows.autopilot import AutopilotDeps, ChildTask, autopilot_stage
+from factory.workflows.cancel import run_cancel
 from factory.workflows.refresh_snapshot import refresh_snapshot_run
-from factory.workflows.services import effective_placement, model_egress
 from factory.workflows.triage import run_triage
+from tests.fakes import FakeGitHub, FakeRuns
 from tests.fixtures import REPO
 
 SHA = "a" * 40
@@ -46,10 +52,11 @@ class AutopilotGitHub:
         self.labels.extend((f"+{label}", number) for label in labels)
 
 
-class AutopilotClaim:
+class AutopilotRun:
     def __init__(self) -> None:
         self.gh = AutopilotGitHub()
         self.repo = require_repo(REPO, 1)
+        self.trace_id = "root"
         self.progress: list[str] = []
 
     async def report_progress(self, summary: str) -> None:
@@ -63,169 +70,196 @@ class ChildContext:
     metadata = TaskRunMetadata(task_run_id="root")
 
 
-async def test_autopilot_orders_children_and_hands_off_typed_json() -> None:
+class Started:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.calls: list[tuple[str, dict[str, Any], str]] = []
+        self.fail = fail
+
+    async def __call__(self, task: str, task_input: dict[str, Any], key: str) -> str:
+        if self.fail:
+            raise RuntimeError("Render is unavailable")
+        self.calls.append((task, task_input, key))
+        return "review-run"
+
+
+async def autopilot(
+    run_child: Callable[[ChildTask, dict[str, Any]], Awaitable[dict[str, Any]]],
+    started: Started,
+    run: AutopilotRun | None = None,
+) -> Outcome[Any]:
+    return await autopilot_stage(
+        cast(Run, run or AutopilotRun()),
+        AutopilotInput(repo=REPO, installation_id=1, issue=7, actor="maintainer"),
+        cast(TaskContext, ChildContext()),
+        AutopilotDeps(run_child, started),
+    )
+
+
+async def drafted_then_opened(task: ChildTask, payload: dict[str, Any]) -> dict[str, Any]:
+    if task.name == "triage":
+        return result("drafted", {"kind": "spec", "comment_id": 11, "hash": "f" * 64, "version": 2})
+    return result("pr_opened", {"kind": "pull_request", "pr": 23, "head_sha": SHA})
+
+
+async def test_autopilot_runs_triage_and_spec_to_pr_then_starts_the_review_on_the_pull_request() -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def run_child(task: ChildTask, payload: dict[str, Any]) -> dict[str, Any]:
-        name = task.name
-        calls.append((name, payload))
-        if name == "triage":
-            return result(
-                "drafted",
-                {"kind": "spec", "comment_id": 11, "hash": "f" * 64, "version": 2},
-            )
-        if name == "spec-to-pr":
-            return result("pr_opened", {"kind": "pull_request", "pr": 23, "head_sha": SHA})
-        return result("reviewed")
+        calls.append((task.name, payload))
+        return await drafted_then_opened(task, payload)
 
-    task_input = AutopilotInput(repo=REPO, installation_id=1, issue=7, actor="maintainer")
-    outcome = await autopilot_stage(
-        cast(Claim, AutopilotClaim()),
-        task_input,
-        cast(TaskContext, ChildContext()),
-        AutopilotDeps(run_child),
-    )
-    assert outcome.outcome == "completed"
-    assert [name for name, _ in calls] == ["triage", "spec-to-pr", "pr-review"]
-    assert calls[1][1]["approval"] == {
-        "kind": "autopilot",
-        "comment_id": 11,
-        "hash": "f" * 64,
-        "version": 2,
-    }
-    assert calls[2][1] == {
-        "repo": REPO,
-        "installation_id": 1,
-        "actor": "maintainer",
-        "pr": 23,
-        "head_sha": SHA,
-        "autopilot_issue": 7,
-    }
+    started = Started()
+    outcome = await autopilot(run_child, started)
+    assert outcome.outcome == "pr_opened"
+    assert [name for name, _ in calls] == ["triage", "spec-to-pr"]
+    assert calls[1][1]["approval"] == {"kind": "autopilot", "comment_id": 11, "hash": "f" * 64, "version": 2}
+    assert started.calls == [
+        (
+            "pr-review",
+            {"repo": REPO, "installation_id": 1, "actor": "maintainer", "pr": 23, "head_sha": SHA},
+            f"root:pr-review:{SHA}",
+        )
+    ]
 
 
-async def test_autopilot_questions_restore_the_label_and_stop() -> None:
-    claim = AutopilotClaim()
+async def test_autopilot_reports_a_review_that_could_not_start() -> None:
+    outcome = await autopilot(drafted_then_opened, Started(fail=True))
+    assert (outcome.state, outcome.outcome) == ("failed", "review_not_started")
+    assert "factory:pr-review" in outcome.summary
+
+
+@pytest.mark.parametrize("triage_outcome", ["asked", "skipped"])
+async def test_autopilot_waits_for_a_reply_when_triage_asks_or_skips(triage_outcome: str) -> None:
+    run = AutopilotRun()
 
     async def ask(_task: ChildTask, _payload: dict[str, Any]) -> dict[str, Any]:
-        return result("asked")
+        return result(triage_outcome)
 
-    outcome = await autopilot_stage(
-        cast(Claim, claim),
-        AutopilotInput(repo=REPO, installation_id=1, issue=7, actor="maintainer"),
-        cast(TaskContext, ChildContext()),
-        AutopilotDeps(ask),
-    )
-    assert outcome.outcome == "waiting_for_answers"
-    assert claim.gh.labels[-1] == ("+factory:autopilot", 7)
+    outcome = await autopilot(ask, Started(), run)
+    assert (outcome.outcome, outcome.waiting) == ("waiting_for_answers", "reply")
+    assert run.gh.labels == []
 
 
-async def test_child_github_task_continues_the_root_claim(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_child_github_task_continues_the_root_trace(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
-    async def fake_with_claim(
-        identity: RunIdentity,
-        options: ClaimOptions,
-        work: Callable[[Claim], Awaitable[Outcome[Any]]],
+    async def fake_with_run(
+        identity: RunIdentity, options: RunOptions, work: Callable[[Run], Awaitable[Outcome[Any]]]
     ) -> TaskResult[Any]:
         del work
         captured["identity"] = identity
         captured["options"] = options
         return TaskResult("done", "ok", "ok", identity.trace_id, identity.run_id)
 
-    monkeypatch.setattr("factory.workflows.github_task.with_claim", fake_with_claim)
+    monkeypatch.setattr("factory.workflows.github_task.with_run", fake_with_run)
 
     class Context:
-        metadata = TaskRunMetadata(
-            task_run_id="child",
-            root_task_run_id="root",
-            parent_task_run_id="root",
-        )
+        metadata = TaskRunMetadata(task_run_id="child", root_task_run_id="root", parent_task_run_id="root")
 
     await run_triage(
         cast(TaskContext, Context()),
-        TriageInput(repo=REPO, installation_id=1, issue=7, actor="maintainer").model_dump(),
+        TriageInput(repo=REPO, installation_id=1, issue=7, actor="maintainer", reply_to="ignored").model_dump(),
         gh=cast(GitHubClient, object()),
-        runs=cast(RunControl, object()),
     )
     assert captured["identity"] == RunIdentity("root", "child")
-    assert cast(ClaimOptions, captured["options"]).mode == "continue"
+    options = cast(RunOptions, captured["options"])
+    assert (options.mode, options.reply_to, options.thread) == ("continue", None, GitHubThread("issue", 7))
 
 
-class CancelGitHub:
-    def __init__(self) -> None:
-        marker = render_marker(
-            StatusMarker(
-                run_id="child",
-                trace_id="root",
-                root_stage="autopilot",
-                stage="pr-review",
-                title="PR Reviewer",
-                state="running",
-                sandbox_id="sandbox",
-            )
-        )
-        self.comment = IssueComment(1, marker, Actor("software-factory[bot]", "Bot"), "", "", "url")
-        self.updated = ""
+ISSUE_KEY = github_thread(REPO, GitHubThread("issue", 7))
 
-    async def get_permission(self, login: str) -> Permission:
-        return "write"
 
-    async def bot_login(self) -> str:
-        return "software-factory[bot]"
+def triggers_removed(gh: FakeGitHub) -> list[tuple[int, str]]:
+    return [removed for removed in gh.removed_labels if removed[1] != WORKING_LABEL]
 
-    async def list_issue_comments(self, number: int) -> list[IssueComment]:
-        return [self.comment]
 
-    async def update_comment(self, comment_id: int, body: str) -> IssueComment:
-        self.updated = body
-        return self.comment
-
-    async def create_comment(self, number: int, body: str) -> IssueComment:
-        raise AssertionError("status exists")
-
-    async def ensure_label(self, name: str, color: str, description: str = "") -> None:
-        return None
-
-    async def add_labels(self, number: int, labels: Sequence[str]) -> None:
-        return None
-
-    async def remove_label(self, number: int, label: str) -> None:
+class TriageServices:
+    def triage(self, _run: Run) -> None:
         return None
 
 
-@dataclass
-class CancelRuns:
-    cancelled: list[str]
-    terminated: list[str]
+async def triage_with(db: Db, gh: FakeGitHub, run_id: str, **fields: Any) -> dict[str, Any]:
+    class Context:
+        metadata = TaskRunMetadata(task_run_id=run_id)
 
-    async def get_status(self, run_id: str) -> str:
-        return "running"
-
-    async def cancel(self, run_id: str) -> None:
-        self.cancelled.append(run_id)
-
-    async def terminate_sandbox(self, sandbox_id: str) -> None:
-        self.terminated.append(sandbox_id)
+    raw = {"repo": REPO, "installation_id": 1, "issue": 7, "actor": "maintainer", **fields}
+    return await run_triage(cast(TaskContext, Context()), raw, gh=gh.as_client(), runs=FakeRuns(), db=db)
 
 
-async def test_cancel_stops_root_and_recorded_child_sandbox() -> None:
-    gh = CancelGitHub()
-    runs = CancelRuns([], [])
-    cancelled = await cancel_stage(
-        gh=gh,
-        runs=runs,
-        repo=require_repo(REPO, 1),
-        number=7,
-        kind="issue",
-        actor="maintainer",
-        identity=RunIdentity("cancel", "cancel"),
-    )
-    assert cancelled.cancelled is True
-    assert cancelled.run_id == "root"
-    assert cancelled.current_run_id == "child"
+@pytest.fixture
+def quiet_triage(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def asked(run: Run, _task_input: TriageInput, _deps: object) -> Outcome[None]:
+        await run.await_reply()
+        return Outcome("asked", "asked 1 question.", waiting="reply")
+
+    monkeypatch.setattr("factory.workflows.triage.get_services", TriageServices)
+    monkeypatch.setattr("factory.workflows.triage.triage_stage", asked)
+
+
+@pytest.mark.postgres
+@pytest.mark.usefixtures("quiet_triage")
+async def test_a_label_started_root_consumes_its_label_and_a_reply_started_one_does_not(db: Db) -> None:
+    gh = FakeGitHub()
+    first = await triage_with(db, gh, "trn-1")
+    assert first["outcome"] == "asked"
+    assert triggers_removed(gh) == [(7, "factory:triage")]
+
+    reply = await triage_with(db, gh, "trn-2", comment_id=99, reply_to="trn-1")
+    assert reply["state"] == "done"
+    assert triggers_removed(gh) == [(7, "factory:triage")]
+
+
+@pytest.mark.postgres
+@pytest.mark.usefixtures("quiet_triage")
+async def test_a_rejected_trigger_leaves_its_label(db: Db) -> None:
+    gh = FakeGitHub(permissions={"maintainer": "read"})
+    rejected = await triage_with(db, gh, "trn-1")
+    assert rejected["state"] == "rejected"
+    assert triggers_removed(gh) == []
+
+
+async def hold_issue(db: Db, trace: str, *, sandbox: str | None = None) -> None:
+    await start_on_thread(db, StartingRun(ISSUE_KEY, trace, trace, "autopilot", "Autopilot", "maintainer", "replace"))
+    if sandbox:
+        await db.query("update runs set sandbox_id = $1 where run_id = $2", (sandbox, trace))
+
+
+async def cancel(db: Db, gh: FakeGitHub, runs: FakeRuns, run_id: str) -> dict[str, Any]:
+    class Context:
+        metadata = TaskRunMetadata(task_run_id=run_id)
+
+    raw = {"repo": REPO, "installation_id": 1, "actor": "maintainer", "number": 7, "kind": "issue"}
+    return await run_cancel(cast(TaskContext, Context()), raw, gh=gh.as_client(), runs=runs, db=db)
+
+
+@pytest.mark.postgres
+async def test_cancel_stops_the_running_trace_and_its_sandbox(db: Db) -> None:
+    gh, runs = FakeGitHub(), FakeRuns()
+    await hold_issue(db, "root", sandbox="sandbox")
+    cancelled = await cancel(db, gh, runs, "cancel-1")
+    assert (cancelled["state"], cancelled["outcome"]) == ("done", "cancelled")
     assert runs.cancelled == ["root"]
     assert runs.terminated == ["sandbox"]
-    assert "cancelled by @maintainer" in gh.updated
+    assert "cancelled `root`" in gh.bodies(7)[0]
+
+
+@pytest.mark.postgres
+async def test_cancel_with_nothing_running_says_so(db: Db) -> None:
+    gh, runs = FakeGitHub(), FakeRuns()
+    cancelled = await cancel(db, gh, runs, "cancel-1")
+    assert cancelled["outcome"] == "nothing_running"
+    assert runs.cancelled == []
+
+
+@pytest.mark.postgres
+async def test_an_unconfirmed_cancel_asks_to_retry_and_the_retry_finishes_the_cleanup(db: Db) -> None:
+    gh = FakeGitHub()
+    await hold_issue(db, "root", sandbox="sandbox")
+    first = await cancel(db, gh, FakeRuns(fail_cancel=True), "cancel-1")
+    assert (first["state"], first["outcome"]) == ("failed", "cancel_unconfirmed")
+    assert "/factory cancel" in first["summary"]
+    second = await cancel(db, gh, FakeRuns(), "cancel-2")
+    assert second["outcome"] == "cleaned_up"
 
 
 def test_one_app_registers_exactly_six_tasks() -> None:
@@ -242,11 +276,55 @@ def test_one_app_registers_exactly_six_tasks() -> None:
     )
 
 
-def test_broker_setting_controls_model_placement_and_egress_together() -> None:
-    assert effective_placement(IMPLEMENTER, False) == "in-task"
-    assert model_egress(IMPLEMENTER, False) == ()
-    assert effective_placement(IMPLEMENTER, True) == "in-sandbox"
-    assert model_egress(IMPLEMENTER, True) == ("api.anthropic.com",)
+async def test_autopilot_children_and_the_review_continue_its_trace() -> None:
+    payloads: list[dict[str, Any]] = []
+
+    async def run_child(task: ChildTask, payload: dict[str, Any]) -> dict[str, Any]:
+        payloads.append(payload)
+        return await drafted_then_opened(task, payload)
+
+    started = Started()
+    with logfire.span("autopilot"):
+        trace_id = format(trace.get_current_span().get_span_context().trace_id, "032x")
+        await autopilot(run_child, started)
+    carried = [*payloads, started.calls[0][1]]
+    assert [payload["trace_context"]["traceparent"].split("-")[1] for payload in carried] == [trace_id] * 3
+
+
+async def test_a_task_continues_the_trace_its_input_carries(
+    monkeypatch: pytest.MonkeyPatch, capfire: CaptureLogfire
+) -> None:
+    async def fake_with_run(
+        identity: RunIdentity, options: RunOptions, work: Callable[[Run], Awaitable[Outcome[Any]]]
+    ) -> TaskResult[Any]:
+        del options, work
+        return TaskResult("failed", "agent_stopped", "stopped", identity.trace_id, identity.run_id)
+
+    monkeypatch.setattr("factory.workflows.github_task.with_run", fake_with_run)
+
+    class Context:
+        metadata = TaskRunMetadata(task_run_id="root", root_task_run_id="root", parent_task_run_id=None)
+
+    parent = "00-" + "1" * 32 + "-" + "2" * 16 + "-01"
+    task_input = TriageInput(
+        repo=REPO, installation_id=1, issue=7, actor="maintainer", trace_context=TraceContext(traceparent=parent)
+    )
+    await run_triage(cast(TaskContext, Context()), task_input.model_dump(), gh=cast(GitHubClient, object()))
+
+    [span] = [
+        span
+        for span in capfire.exporter.exported_spans
+        if span.name.startswith("{title}") and (span.attributes or {}).get("logfire.span_type") == "span"
+    ]
+    assert span.context is not None
+    assert span.parent is not None
+    assert (format(span.context.trace_id, "032x"), format(span.parent.span_id, "016x")) == ("1" * 32, "2" * 16)
+    attributes = dict(span.attributes or {})
+    assert (attributes["outcome"], attributes["factory.run_id"], attributes["factory.thread"]) == (
+        "agent_stopped",
+        "root",
+        "issue#7",
+    )
 
 
 async def test_snapshot_refresh_checks_the_push_actors_current_permission() -> None:
@@ -267,3 +345,28 @@ async def test_snapshot_refresh_checks_the_push_actors_current_permission() -> N
             },
             gh=NoPermission(),
         )
+
+
+PROJECT = "https://logfire-us.pydantic.dev/acme/factory"
+VIEW = StatusView("trace-1", "run-1", "triage", "Triage", "running", "reading the issue")
+
+
+def test_the_status_comment_links_the_runs_logfire_trace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOGFIRE_PROJECT_URL", PROJECT + "/")
+    with logfire.span("run"):
+        trace_id = format(trace.get_current_span().get_span_context().trace_id, "032x")
+        body = status_body(VIEW, trace_link())
+    assert f"[Trace in Logfire]({PROJECT}?q=trace_id%3D%27{trace_id}%27)" in body
+
+
+@pytest.mark.parametrize("project", ["", "http://logfire.example/acme/factory", f"{PROJECT}?q=x"])
+def test_no_trace_link_without_an_https_project_url(monkeypatch: pytest.MonkeyPatch, project: str) -> None:
+    monkeypatch.setenv("LOGFIRE_PROJECT_URL", project)
+    with logfire.span("run"):
+        assert trace_link() is None
+    assert "Trace in Logfire" not in status_body(VIEW, None)
+
+
+def test_no_trace_link_outside_a_run_span(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOGFIRE_PROJECT_URL", PROJECT)
+    assert trace_link() is None

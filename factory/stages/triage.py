@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
-from factory.claims import Claim, Outcome, StatusLink
 from factory.config import RepoContext
 from factory.format import triage_decline_body, triage_questions_body
 from factory.github import Issue, IssueComment, QuestionsMarker, render_marker
+from factory.runs import Outcome, Run, StatusLink
 from factory.schemas import TriageDecision, TriageInput
 from factory.stages.spec import SpecSandbox, SpecWriter, TriageHandoff, draft_spec, publish_spec
 from factory.stages.thread import read_thread, spec_writer_message, triage_message
@@ -20,7 +20,6 @@ class TriageGitHub(Protocol):
     async def bot_login(self) -> str: ...
     async def create_comment(self, number: int, body: str) -> IssueComment: ...
     async def update_comment(self, comment_id: int, body: str) -> IssueComment: ...
-    async def remove_label(self, number: int, label: str) -> None: ...
 
 
 class OpenedSandbox(SpecSandbox, Protocol):
@@ -42,8 +41,8 @@ class TriageDeps:
     run_spec_writer: SpecWriter
 
 
-async def triage_stage(claim: Claim, task_input: TriageInput, deps: TriageDeps) -> Outcome[TriageHandoff]:
-    gh: TriageGitHub = claim.gh
+async def triage_stage(run: Run, task_input: TriageInput, deps: TriageDeps) -> Outcome[TriageHandoff]:
+    gh: TriageGitHub = run.gh
     issue = await gh.get_issue(task_input.issue)
     comments = await gh.list_issue_comments(task_input.issue)
     bot = await gh.bot_login()
@@ -53,17 +52,19 @@ async def triage_stage(claim: Claim, task_input: TriageInput, deps: TriageDeps) 
             return Outcome(
                 "skipped",
                 "the comment that started this run is the factory's own or no longer exists.",
+                waiting="reply",
             )
     thread = read_thread(issue, comments, bot)
 
-    await claim.report_progress("opening a sandbox")
-    sandbox = await deps.open_sandbox(claim.repo, claim.repo.config.base_branch)
+    await run.report_progress("opening a sandbox")
+    sandbox = await deps.open_sandbox(run.repo, run.repo.config.base_branch)
     try:
-        await claim.track_sandbox(sandbox.id)
-        await claim.report_progress("reading the issue and the repository")
-        decision = await deps.run_triage(triage_message(claim.repo.full_name, thread), sandbox)
+        await run.track_sandbox(sandbox.id)
+        await run.report_progress("reading the issue and the repository")
+        decision = await deps.run_triage(triage_message(run.repo.full_name, thread), sandbox)
         if decision.decision == "ask":
-            await claim.report_progress("posting questions")
+            await run.report_progress("posting questions")
+            await run.await_reply()
             round_number = (thread.questions.round + 1) if thread.questions else 1
             marker = render_marker(QuestionsMarker(round=round_number, questions=decision.questions))
             body = f"{triage_questions_body(decision.questions)}\n\n{marker}"
@@ -77,22 +78,25 @@ async def triage_stage(claim: Claim, task_input: TriageInput, deps: TriageDeps) 
                 "asked",
                 f"asked {count} question{'' if count == 1 else 's'}.",
                 links=(StatusLink("Questions", comment.html_url),),
+                waiting="reply",
             )
         if decision.decision == "decline":
-            await claim.report_progress("posting the decision")
+            await run.report_progress("posting the decision")
             comment = await gh.create_comment(issue.number, triage_decline_body(decision.rationale))
             return Outcome(
                 "declined",
                 "declined the issue.",
                 links=(StatusLink("Reason", comment.html_url),),
             )
-        await claim.report_progress("revising the spec" if thread.spec else "drafting the spec")
+        await run.report_progress("revising the spec" if thread.spec else "drafting the spec")
         drafted = await draft_spec(
             deps.run_spec_writer,
             sandbox,
-            spec_writer_message(claim.repo.full_name, thread, decision),
+            spec_writer_message(run.repo.full_name, thread, decision),
         )
-        await claim.report_progress("posting the spec")
-        return await publish_spec(gh, issue, thread.spec, drafted)
+        await run.report_progress("posting the spec")
+        if run.trace_id == run.run_id:
+            await run.await_reply()
+        return replace(await publish_spec(gh, issue, thread.spec, drafted), waiting="reply")
     finally:
         await sandbox.close()

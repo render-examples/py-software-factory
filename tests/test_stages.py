@@ -4,9 +4,9 @@ from typing import Never, cast
 
 import pytest
 
-from factory.claims import Claim, ExpectedFailure
 from factory.config import RepoContext, require_repo
 from factory.github import GitCommit, GitIdentity, PullFile, PullRequest, PullRequestReview
+from factory.runs import ExpectedFailure, Run
 from factory.sandbox import ExecResult
 from factory.sandbox.errors import SandboxHeadMovedError
 from factory.schemas import PrReviewInput, Spec
@@ -81,7 +81,7 @@ class ReviewGitHub:
         return ""
 
 
-class ReviewClaim:
+class ReviewRun:
     def __init__(self) -> None:
         self.gh = ReviewGitHub()
         self.repo = require_repo(REPO, 1)
@@ -105,7 +105,7 @@ async def test_pr_review_refuses_a_stale_labeled_head() -> None:
     task_input = PrReviewInput(repo=REPO, installation_id=1, pr=7, head_sha=SHA, actor="maintainer")
     with pytest.raises(ExpectedFailure) as caught:
         await pr_review_stage(
-            cast(Claim, ReviewClaim()),
+            cast(Run, ReviewRun()),
             task_input,
             PrReviewDeps(_never_open, _never_review),
         )
@@ -120,7 +120,7 @@ async def test_pr_review_translates_typed_sandbox_head_move() -> None:
     task_input = PrReviewInput(repo=REPO, installation_id=1, pr=7, head_sha="b" * 40, actor="maintainer")
     with pytest.raises(ExpectedFailure) as caught:
         await pr_review_stage(
-            cast(Claim, ReviewClaim()),
+            cast(Run, ReviewRun()),
             task_input,
             PrReviewDeps(moved, _never_review),
         )

@@ -5,10 +5,10 @@ from __future__ import annotations
 import re
 from typing import Protocol
 
-from factory.claims import ExpectedFailure
+from factory.runs import ExpectedFailure
 from factory.sandbox import ExecResult, shq
 
-_HEAD_MOVED = "the PR changed after it was labeled; reapply the label"
+_HEAD_MOVED = "the PR changed after it was labeled; apply the label again"
 
 
 class MergeBaseSandbox(Protocol):

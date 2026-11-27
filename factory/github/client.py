@@ -98,6 +98,14 @@ class GitHubClient:
         )
         return _comment(raw)
 
+    async def delete_comment(self, comment_id: int) -> None:
+        """A comment that is already gone (404) is fine."""
+        try:
+            await self.http.json("DELETE", f"{self._base}/issues/comments/{comment_id}")
+        except GitHubError as error:
+            if error.status != 404:
+                raise
+
     async def ensure_label(self, name: str, color: str, description: str = "") -> None:
         """Creates a repository label, confirming that a 422 really means it already exists."""
         try:

@@ -8,9 +8,9 @@ from render.client.errors import ClientError
 from render.experimental.sandbox.errors import SandboxNotFoundError
 from render.workflows.context import TaskRunMetadata
 
-from factory.claims import RunNotFoundError, task_identity
-from factory.claims.run_control import RenderRunControl
-from factory.sandbox.client import ApiPacer, PacedSandboxClient, SandboxApi
+from factory.runs import RunNotFoundError, task_identity
+from factory.runs.run_control import RenderRunControl
+from factory.sandbox.client import SandboxApi, SandboxClient
 
 
 class FakeWorkflows:
@@ -76,12 +76,12 @@ async def test_render_run_control_uses_task_apis_and_treats_missing_resources_as
     await control.terminate_sandbox("sbx-missing")
 
 
-async def test_render_run_control_delegates_real_missing_sandbox_shape_to_paced_client() -> None:
+async def test_render_run_control_delegates_real_missing_sandbox_shape_to_sandbox_client() -> None:
     class MissingSandboxApi:
         async def terminate(self, sandbox_id: str) -> None:
             raise SandboxNotFoundError("missing")
 
     render = FakeRender()
-    paced = PacedSandboxClient(cast(SandboxApi, MissingSandboxApi()), pacer=ApiPacer(0))
-    control = RenderRunControl(cast(Any, render), paced)
+    client = SandboxClient(cast(SandboxApi, MissingSandboxApi()))
+    control = RenderRunControl(cast(Any, render), client)
     await control.terminate_sandbox("sbx-missing")

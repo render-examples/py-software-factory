@@ -7,6 +7,8 @@ from factory.github.auth import reset_token_cache
 from factory.github.client import reset_bot_login_cache
 from tests.fixtures import TEST_CONFIG
 
+pytest_plugins = ["tests.db"]
+
 
 @pytest.fixture(autouse=True)
 def _test_config(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]

@@ -8,7 +8,9 @@ from typing import Final, Protocol
 SANDBOX_ROOT: Final = "/opt/factory"
 """The snapshot build creates these paths; restored sandboxes find them in place."""
 APP_DIR: Final = f"{SANDBOX_ROOT}/app"
-"""Runner, scripts, env file, and manifest. Root-owned, read-only to the runner user."""
+"""Scripts, env file, and manifest. Root-owned, read-only to the runner user."""
+SANDBOX_PYTHON: Final = f"{SANDBOX_ROOT}/venv/bin/python"
+"""The sandbox's own Python 3.12, which runs the file helper."""
 REPO_DIR: Final = f"{SANDBOX_ROOT}/repo"
 """The repository checkout. Owned by the runner user, so agents with write tools can edit it."""
 SCRATCH_DIR: Final = f"{SANDBOX_ROOT}/scratch"
@@ -50,7 +52,8 @@ class SnapshotManifest:
     base_branch: str
     sha: str
     lockfile_hash: str
-    runner_requirements_hash: str
+    scripts_hash: str
+    """The factory scripts the snapshot was built with. A deployment with different scripts rebuilds it."""
     install: str | None
     created_at: str
 

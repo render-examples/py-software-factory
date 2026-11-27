@@ -1,331 +1,326 @@
+"""Agents end to end: the real Pydantic AI loop, Harness capabilities, and sandbox/fileops.py, with a scripted model and
+a sandbox that runs commands locally."""
+
 from __future__ import annotations
 
-import base64
 import json
-from datetime import UTC, datetime
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, Literal, cast, get_args, get_origin
+from typing import Any, Literal, get_args, get_origin
 
 import pytest
-from pydantic_ai import ModelRetry
-from pydantic_ai.messages import ModelResponse, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.anthropic import AnthropicModelName
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
 
-from factory.agents.registry import AGENTS, PR_REVIEWER, TRIAGE
-from factory.agents.run import UploadedSandboxRunner, run_agent
-from factory.agents.shell_policy import reject_reason
-from factory.agents.tools import AgentDeps, _shell_env, bash, edit, ls, read, write
-from factory.agents.workspace import SandboxWorkspaceBackend
-from factory.events import EventIds
-from factory.runner.protocol import ResultEvent, RunnerInput
-from factory.sandbox.types import (
-    APP_DIR,
-    REPO_DIR,
-    RUNNER_HOME,
-    RUNNER_PATH,
-    RUNNER_TMP,
-    ExecResult,
-    Sandbox,
+from factory.agents.errors import AgentError
+from factory.agents.files import FILEOPS, FileOpRefused, SandboxFiles
+from factory.agents.registry import AGENTS, IMPLEMENTER, PR_REVIEWER, SPEC_WRITER, TRIAGE
+from factory.agents.run import run_agent
+from factory.agents.workspace import (
+    DEFAULT_COMMAND_SECONDS,
+    KILL_GRACE_SECONDS,
+    MAX_COMMAND_SECONDS,
+    SandboxWorkspace,
 )
+from factory.events import EventIds
+from factory.sandbox import APP_DIR, REPO_DIR, RUN_AS, SANDBOX_PYTHON, SCRATCH_DIR, ExecResult, shq
 
+ROOT = Path(__file__).resolve().parents[1]
 EVENT_IDS = EventIds("trace-1", "run-1", "acme/repo", "issue#1")
+AS_RUNNER = f"bash {shq(f'{APP_DIR}/as-runner.sh')} "
+TIMEOUT_SHIM = """#!PYTHON
+import subprocess, sys
+args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+try:
+    sys.exit(subprocess.run(args[1:], timeout=float(args[0])).returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+"""
 
 
-class FakeSandbox:
+class LocalSandbox:
+    """Runs commands with bash in a local checkout that stands in for REPO_DIR, using this repo's fileops.py."""
+
     id = "sandbox-1"
 
-    def __init__(self) -> None:
+    def __init__(self, repo: Path) -> None:
+        self.repo = repo
+        self.scratch = repo.parent / f"{repo.name}-scratch"
+        self.calls: list[tuple[str, float | None, bool]] = []
         self.uploads: dict[str, bytes] = {}
-        self.commands: list[str] = []
-        self.runner_output = b""
+        self.path = os.environ["PATH"]
+        if shutil.which("timeout") is None:
+            # The sandbox has coreutils; this machine may not. Same arguments and exit 124 on expiry.
+            tools = self.scratch / "bin"
+            tools.mkdir(parents=True, exist_ok=True)
+            (tools / "timeout").write_text(TIMEOUT_SHIM.replace("PYTHON", sys.executable))
+            (tools / "timeout").chmod(0o755)
+            self.path = f"{tools}{os.pathsep}{self.path}"
+
+    def _local(self, command: str) -> str:
+        local = (
+            command.replace(SANDBOX_PYTHON, shq(sys.executable))
+            .replace(FILEOPS, str(ROOT / "sandbox" / "fileops.py"))
+            .replace(REPO_DIR, str(self.repo))
+            .replace(SCRATCH_DIR, str(self.scratch))
+            .replace(AS_RUNNER, "")
+        )
+        # There is no runner user locally to hand a staged request to.
+        return re.sub(rf"^chown {re.escape(shq(RUN_AS))}: \S+ && ", "", local)
 
     async def exec(self, command: str, *, timeout_seconds: float | None = None, as_runner: bool = False) -> ExecResult:
-        del timeout_seconds, as_runner
-        self.commands.append(command)
-        if "run-agent.sh" in command:
-            input_path = next(path for path in self.uploads if path.endswith("/input.json"))
-            run_dir = input_path.removesuffix("/input.json")
-            self.uploads[f"{run_dir}.jsonl"] = self.runner_output
-            self.uploads[f"{run_dir}.exit"] = b"0\n"
-        return ExecResult(0, "", "")
+        self.calls.append((command, timeout_seconds, as_runner))
+        result = subprocess.run(
+            ["bash", "-c", self._local(command)],
+            cwd=self.repo,
+            env={**os.environ, "PATH": self.path},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return ExecResult(result.returncode, result.stdout, result.stderr)
 
     async def upload(self, path: str, data: bytes) -> None:
         self.uploads[path] = data
+        local = Path(self._local(path))
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_bytes(data)
 
     async def download(self, path: str) -> bytes:
-        return self.uploads[path]
+        raise AssertionError("agents never download files")
 
     async def close(self) -> None:
         return None
 
 
-def triage_output() -> dict[str, Any]:
-    return {
-        "decision": "draft",
-        "questions": [],
-        "rationale": "ready",
-        "findings": "found it",
-        "relevantPaths": ["src/main.py"],
-    }
+Step = Callable[[list[ModelMessage], AgentInfo], ModelResponse]
 
 
-def output_model(data: dict[str, Any]) -> FunctionModel:
-    def respond(_messages: list[Any], info: AgentInfo) -> ModelResponse:
-        output = info.output_tools[0]
-        assert output.name == "submit"
-        return ModelResponse(parts=[ToolCallPart(output.name, data)])
+def scripted(*calls: tuple[str, dict[str, Any]]) -> tuple[FunctionModel, list[str]]:
+    """A model that makes `calls` in order, then submits; returns it and the tool results it saw."""
+    seen: list[str] = []
 
-    return FunctionModel(respond)
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        last = messages[-1]
+        if isinstance(last, ModelRequest):
+            seen.extend(str(part.content) for part in last.parts if isinstance(part, ToolReturnPart))
+        step = sum(isinstance(message, ModelResponse) for message in messages)
+        if step < len(calls):
+            name, args = calls[step]
+            return ModelResponse(parts=[ToolCallPart(name, args)])
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, OUTPUTS[info.output_tools[0].name])])
+
+    return FunctionModel(respond), seen
 
 
-async def test_in_task_agent_returns_output_with_complete_telemetry(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+OUTPUTS: dict[str, dict[str, Any]] = {}
+
+
+def submits(output: dict[str, Any]) -> None:
+    OUTPUTS["submit"] = output
+
+
+TRIAGE_OUTPUT = {
+    "decision": "draft",
+    "questions": [],
+    "rationale": "ready",
+    "findings": "found it",
+    "relevantPaths": ["src/app.py"],
+}
+IMPLEMENTATION = {
+    "summary": "changed it",
+    "filesChanged": ["src/app.py"],
+    "verification": [],
+    "followUps": [],
+}
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
     (tmp_path / "src").mkdir()
-    sandbox = FakeSandbox()
-    result = await run_agent(
-        TRIAGE,
-        "triage this",
-        event_ids=EVENT_IDS,
-        sandbox=sandbox,
-        model=output_model(triage_output()),
-        workspace_factory=lambda _sandbox: LocalWorkspaceBackend(tmp_path),
-    )
+    (tmp_path / "src" / "app.py").write_text("def greet():\n    return 'hello'\n")
+    return tmp_path
+
+
+def test_registry_uses_explicit_supported_anthropic_models() -> None:
+    literal = next(item for item in get_args(AnthropicModelName) if get_origin(item) is Literal)
+    configured = {agent.model.partition(":")[2] for agent in AGENTS}
+    assert configured == {"claude-sonnet-5-5", "claude-opus-5-5"}
+    assert configured <= set(get_args(literal))
+
+
+def test_only_the_implementer_writes() -> None:
+    assert [agent.id for agent in AGENTS if agent.writes] == [IMPLEMENTER.id]
+
+
+@pytest.mark.parametrize(
+    ("agent", "tools"),
+    [
+        (TRIAGE, {"read_file", "list_files", "grep", "run_command"}),
+        (SPEC_WRITER, {"read_file", "list_files", "grep", "run_command"}),
+        (PR_REVIEWER, {"read_file", "list_files", "grep", "run_command"}),
+        (IMPLEMENTER, {"read_file", "list_files", "grep", "run_command", "edit_file", "write_file"}),
+    ],
+)
+async def test_each_agent_gets_exactly_its_tools(agent: Any, tools: set[str], repo: Path) -> None:
+    offered: list[set[str]] = []
+
+    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        offered.append({tool.name for tool in info.function_tools})
+        raise RuntimeError("stop")
+
+    with pytest.raises(RuntimeError, match="stop"):
+        await run_agent(agent, "go", event_ids=EVENT_IDS, sandbox=LocalSandbox(repo), model=FunctionModel(respond))
+    assert offered == [tools]
+
+
+async def test_run_returns_validated_output_and_emits_usage(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    submits(TRIAGE_OUTPUT)
+    model, _ = scripted()
+    result = await run_agent(TRIAGE, "triage this", event_ids=EVENT_IDS, sandbox=LocalSandbox(repo), model=model)
     assert result.model_dump(by_alias=True)["decision"] == "draft"
     event = json.loads(capsys.readouterr().out.splitlines()[-1])
-    assert event.pop("usage")["requests"] == 1
-    assert event == {
-        "level": "info",
+    assert {key: event[key] for key in ("event", "trace_id", "run_id", "repo", "subject", "agent_id", "requests")} == {
         "event": "agent.finished",
         "trace_id": "trace-1",
         "run_id": "run-1",
         "repo": "acme/repo",
         "subject": "issue#1",
         "agent_id": "triage",
-        "placement": "in-task",
-        "sandbox_requests": 0,
+        "requests": 1,
     }
 
 
-async def test_in_sandbox_definition_can_safely_fall_back_to_task_placement(tmp_path: Path) -> None:
-    result = await run_agent(
-        PR_REVIEWER,
-        "review this",
-        event_ids=EVENT_IDS,
-        sandbox=FakeSandbox(),
-        placement="in-task",
-        model=output_model({"summary": "fine", "riskTier": "trivial", "comments": []}),
-        workspace_factory=lambda _sandbox: LocalWorkspaceBackend(tmp_path),
+async def test_implementer_edits_files_inside_the_sandbox(repo: Path) -> None:
+    submits(IMPLEMENTATION)
+    model, seen = scripted(
+        ("read_file", {"path": "src/app.py"}),
+        ("edit_file", {"path": "src/app.py", "edits": [{"old_text": "'hello'", "new_text": "'hi'"}]}),
+        ("write_file", {"path": "src/new/module.py", "content": "VALUE = 1\n"}),
+        ("grep", {"pattern": "hi", "path": "src"}),
     )
-    assert result.model_dump(by_alias=True)["riskTier"] == "trivial"
+    sandbox = LocalSandbox(repo)
+    await run_agent(IMPLEMENTER, "implement", event_ids=EVENT_IDS, sandbox=sandbox, model=model)
+
+    assert (repo / "src" / "app.py").read_text() == "def greet():\n    return 'hi'\n"
+    assert (repo / "src" / "new" / "module.py").read_text() == "VALUE = 1\n"
+    assert "     2\t    return 'hello'" in seen[0]
+    assert seen[1] == "Edited src/app.py (1 replacement)."
+    assert seen[2] == "Created src/new/module.py (10 bytes)."
+    if shutil.which("rg"):
+        assert "src/app.py:2:    return 'hi'" in seen[3]
+    # Every file operation is one command, run as the runner user; no file was downloaded.
+    file_calls = [call for call in sandbox.calls if FILEOPS in call[0]]
+    assert len(file_calls) == 4
+    assert all(as_runner for _, _, as_runner in file_calls)
 
 
-async def test_in_task_definition_cannot_be_promoted_to_sandbox() -> None:
-    with pytest.raises(ValueError, match="cannot be promoted"):
-        await run_agent(
-            TRIAGE,
-            "triage this",
-            event_ids=EVENT_IDS,
-            sandbox=FakeSandbox(),
-            placement="in-sandbox",
-        )
+async def test_a_refused_edit_is_reported_to_the_model_and_changes_nothing(repo: Path) -> None:
+    submits(IMPLEMENTATION)
+    model, seen = scripted(
+        (
+            "edit_file",
+            {
+                "path": "src/app.py",
+                "edits": [{"old_text": "def", "new_text": "async def"}, {"old_text": "nope", "new_text": "x"}],
+            },
+        ),
+        ("write_file", {"path": "../escape.txt", "content": "x"}),
+    )
+    await run_agent(IMPLEMENTER, "implement", event_ids=EVENT_IDS, sandbox=LocalSandbox(repo), model=model)
+    assert seen[0] == "Error: edit 2: old_text was not found in src/app.py. No edits were applied."
+    assert seen[1] == "Error: ../escape.txt is outside the repository"
+    assert (repo / "src" / "app.py").read_text().startswith("def greet")
+    assert not (repo.parent / "escape.txt").exists()
 
 
-def test_registry_pins_tool_authority_and_placement() -> None:
-    assert [(agent.id, agent.tools, agent.max_turns, agent.placement) for agent in AGENTS] == [
-        ("triage", ("read", "ls", "bash"), 40, "in-task"),
-        ("spec-writer", ("read", "ls", "bash"), 60, "in-task"),
-        ("implementer", ("read", "ls", "bash", "edit", "write"), 150, "in-sandbox"),
-        ("pr-reviewer", ("read", "ls", "bash"), 100, "in-sandbox"),
+async def test_read_only_agents_cannot_redirect_or_run_unlisted_commands(repo: Path) -> None:
+    submits(TRIAGE_OUTPUT)
+    model, seen = scripted(
+        ("run_command", {"command": "echo hi > src/written.txt"}),
+        ("run_command", {"command": 'python3 -c \'open("src/written.txt", "w")\''}),
+        ("run_command", {"command": "git --version"}),
+    )
+    await run_agent(TRIAGE, "triage", event_ids=EVENT_IDS, sandbox=LocalSandbox(repo), model=model)
+    assert not (repo / "src" / "written.txt").exists()
+    assert "git version" in seen[-1]
+
+
+async def test_turn_limit_maps_to_max_turns(repo: Path) -> None:
+    def loop(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[ToolCallPart("list_files", {"path": "src"})])
+
+    limited = replace(TRIAGE, max_turns=2)
+    with pytest.raises(AgentError) as raised:
+        await run_agent(limited, "go", event_ids=EVENT_IDS, sandbox=LocalSandbox(repo), model=FunctionModel(loop))
+    assert raised.value.code == "max_turns"
+
+
+async def test_workspace_runs_commands_as_the_runner_with_bounded_timeouts(repo: Path) -> None:
+    sandbox = LocalSandbox(repo)
+    workspace = SandboxWorkspace(sandbox)
+    assert await workspace.working_dir() == REPO_DIR
+    result = await workspace.run(  # noqa: S604 - the sandbox shell under test
+        "echo $GREETING",
+        shell=True,
+        env={"GREETING": "hello world"},
+        timeout=99_999,
+    )
+    assert result.stdout == "hello world\n"
+    await workspace.run(["printf", "%s", "a b"])
+    assert [(timeout, as_runner) for _, timeout, as_runner in sandbox.calls] == [
+        (MAX_COMMAND_SECONDS + KILL_GRACE_SECONDS, True),
+        (DEFAULT_COMMAND_SECONDS + KILL_GRACE_SECONDS, True),
     ]
-    assert reject_reason("git status", "/tmp/factory") is None
-    assert reject_reason("git commit -am nope", "/tmp/factory") is not None
-    assert reject_reason("curl https://example.com", "/tmp/factory") is not None
+    assert shlex.split(sandbox.calls[1][0]) == [
+        "timeout",
+        f"--kill-after={KILL_GRACE_SECONDS}s",
+        str(DEFAULT_COMMAND_SECONDS),
+        "bash",
+        "-c",
+        "'printf' '%s' 'a b'",
+    ]
 
 
-@pytest.mark.parametrize(
-    ("command", "reason"),
-    [
-        ("env -u FOO rm -rf .", "rm"),
-        ("xargs -I {} curl https://example.com", "curl"),
-        ("git --git-dir .git clean -fd", "git clean"),
-        ("git --work-tree . reset --hard", "git reset"),
-        ("echo hi >|tracked.txt", "redirecting output"),
-        ("time -o report.txt echo hi", "time output"),
-    ],
-)
-def test_read_only_shell_policy_rejects_wrapper_and_redirect_bypasses(command: str, reason: str) -> None:
-    assert reason in (reject_reason(command, "/opt/factory/scratch") or "")
+async def test_a_command_that_runs_over_its_limit_reports_exit_124(repo: Path) -> None:
+    result = await SandboxWorkspace(LocalSandbox(repo)).run(["sleep", "5"], timeout=0.2)
+    assert result.exit_code == 124
 
 
-@pytest.mark.parametrize(
-    "command",
-    [
-        "env -u FOO git status",
-        "xargs -I {} git status",
-        "git --git-dir .git --work-tree . status",
-        "echo hi >|/tmp/report.txt",
-    ],
-)
-def test_read_only_shell_policy_keeps_safe_wrapped_commands(command: str) -> None:
-    assert reject_reason(command, "/opt/factory/scratch") is None
+async def test_large_requests_are_uploaded_instead_of_passed_as_an_argument(repo: Path) -> None:
+    sandbox = LocalSandbox(repo)
+    files = SandboxFiles(sandbox, str(repo))
+    content = "x = '''" + "q'" * 70_000 + "'''\n"
+    result = await files.request("write", path="big.py", content=content)
+    assert result["bytes"] == len(content)
+    assert (repo / "big.py").read_text() == content
+    [staged] = sandbox.uploads
+    assert staged.endswith(".json")
+    command, _, as_runner = sandbox.calls[-1]
+    assert not as_runner
+    assert command.startswith("chown ")
+    assert "--request-file" in command
+    assert not Path(sandbox._local(staged)).exists()
 
 
-def test_registry_uses_explicit_supported_anthropic_models() -> None:
-    literal = next(item for item in get_args(AnthropicModelName) if get_origin(item) is Literal)
-    supported = set(get_args(literal))
-    configured = {agent.model.partition(":")[2] for agent in AGENTS}
-    assert configured == {"claude-sonnet-5-5", "claude-opus-5-5"}
-    assert configured <= supported
+async def test_small_requests_travel_inline(repo: Path) -> None:
+    sandbox = LocalSandbox(repo)
+    await SandboxFiles(sandbox, str(repo)).request("read", path="src/app.py")
+    assert sandbox.uploads == {}
+    assert len(sandbox.calls) == 1
 
 
-async def test_read_only_shell_rejection_is_recoverable_by_the_model() -> None:
-    class Context:
-        deps = AgentDeps(read_only=True)
-
-    with pytest.raises(ModelRetry, match="read-only shell policy"):
-        await bash(cast(Any, Context()), "pip install surprise")
-
-
-async def test_in_sandbox_input_contains_no_model_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    secret = "sk-ant-do-not-cross-boundary"
-    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
-    captured: list[RunnerInput] = []
-
-    class Runner:
-        async def run(self, sandbox: Sandbox, run_input: RunnerInput, timeout_seconds: float) -> tuple[int, str]:
-            del sandbox, timeout_seconds
-            captured.append(run_input)
-            event = ResultEvent(
-                at=datetime(2026, 11, 17, 12, tzinfo=UTC),
-                output={"summary": "fine", "riskTier": "trivial", "comments": []},
-                turns=1,
-            )
-            return 0, event.model_dump_json() + "\n"
-
-    result = await run_agent(
-        PR_REVIEWER,
-        "review this",
-        event_ids=EVENT_IDS,
-        sandbox=FakeSandbox(),
-        sandbox_runner=Runner(),
-    )
-    assert result.model_dump(by_alias=True)["riskTier"] == "trivial"
-    assert secret not in captured[0].model_dump_json()
-
-
-async def test_default_sandbox_command_and_upload_contain_no_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    secret = "sk-ant-do-not-cross-boundary"
-    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
-    sandbox = FakeSandbox()
-    run_input = RunnerInput(
-        protocol_version=3,
-        trace_id="trace",
-        agent_id=PR_REVIEWER.id,
-        system_prompt=PR_REVIEWER.prompt,
-        message="review",
-        tools=PR_REVIEWER.tools,
-        output_schema=PR_REVIEWER.output_type.model_json_schema(mode="validation"),
-        max_turns=PR_REVIEWER.max_turns,
-        timeout_ms=1_000,
-        cwd="/opt/factory/repo",
-        scratch_dir="/opt/factory/scratch",
-    )
-    await UploadedSandboxRunner().run(sandbox, run_input, 1)
-    serialized = next(data for path, data in sandbox.uploads.items() if path.endswith("/input.json")).decode()
-    assert secret not in serialized
-    assert secret not in "\n".join(sandbox.commands)
-    assert "ANTHROPIC_API_KEY" not in serialized
-    assert all("key" not in Path(path).name for path in sandbox.uploads)
-    assert json.loads(serialized)["protocol_version"] == 3
-
-
-async def test_default_runner_uses_protocol_script_through_standard_exec() -> None:
-    sandbox = FakeSandbox()
-    event = ResultEvent(
-        at=datetime(2026, 11, 17, 12, tzinfo=UTC),
-        output={"summary": "fine", "riskTier": "trivial", "comments": []},
-        turns=1,
-    )
-    sandbox.runner_output = (event.model_dump_json() + "\n").encode()
-    run_input = RunnerInput(
-        protocol_version=3,
-        trace_id="trace",
-        agent_id=PR_REVIEWER.id,
-        system_prompt=PR_REVIEWER.prompt,
-        message="review",
-        tools=PR_REVIEWER.tools,
-        output_schema=PR_REVIEWER.output_type.model_json_schema(mode="validation"),
-        max_turns=PR_REVIEWER.max_turns,
-        timeout_ms=1_000,
-        cwd="/opt/factory/repo",
-        scratch_dir="/opt/factory/scratch",
-    )
-    status, output = await UploadedSandboxRunner().run(sandbox, run_input, 1)
-    assert status == 0
-    assert '"type":"result"' in output
-    assert any("run-agent.sh" in command for command in sandbox.commands)
-
-
-async def test_paced_workspace_rejects_paths_outside_the_repository() -> None:
-    workspace = SandboxWorkspaceBackend(FakeSandbox())
-    with pytest.raises(ValueError, match="escapes"):
-        await workspace.read_bytes("../secret")
-    with pytest.raises(ValueError, match="escapes"):
-        await workspace.write_bytes("/etc/passwd", b"x")
-
-
-async def test_sandbox_workspace_operations_always_run_as_runner() -> None:
-    class RecordingSandbox(FakeSandbox):
-        def __init__(self) -> None:
-            super().__init__()
-            self.runner_flags: list[bool] = []
-
-        async def exec(
-            self, command: str, *, timeout_seconds: float | None = None, as_runner: bool = False
-        ) -> ExecResult:
-            del timeout_seconds
-            self.commands.append(command)
-            self.runner_flags.append(as_runner)
-            stdout = base64.b64encode(b"hello").decode() if "b64encode" in command else ""
-            return ExecResult(0, stdout, "")
-
-    sandbox = RecordingSandbox()
-    workspace = SandboxWorkspaceBackend(sandbox)
-    assert await workspace.read_bytes(f"{REPO_DIR}/file.txt") == b"hello"
-    await workspace.write_bytes(f"{REPO_DIR}/file.txt", b"changed")
-    await workspace.run(["git", "status"], timeout=30)
-    assert sandbox.runner_flags == [True, True, True]
-
-
-async def test_file_tools_share_workspace_operations_and_reject_escape_paths(tmp_path: Path) -> None:
-    outside = tmp_path.parent / "outside.txt"
-    outside.write_text("secret")
-    (tmp_path / "notes.txt").write_text("before")
-    (tmp_path / "outside-link").symlink_to(outside)
-
-    class Context:
-        deps = AgentDeps(read_only=False)
-        workspace = Workspace(LocalWorkspaceBackend(tmp_path))
-
-    ctx = cast(Any, Context())
-    assert await read(ctx, "notes.txt") == "before"
-    assert "notes.txt" in await ls(ctx)
-    assert await edit(ctx, "notes.txt", "before", "after") == "edited notes.txt"
-    assert await write(ctx, "nested/new.txt", "new") == "wrote nested/new.txt"
-    assert (tmp_path / "notes.txt").read_text() == "after"
-    assert (tmp_path / "nested/new.txt").read_text() == "new"
-
-    for path in ("../outside.txt", str(outside), "outside-link"):
-        with pytest.raises(ModelRetry, match="escapes"):
-            await read(ctx, path)
-
-
-def test_shell_environment_matches_as_runner_layout() -> None:
-    environment = _shell_env()
-    assert environment["HOME"] == RUNNER_HOME
-    assert environment["TMPDIR"] == RUNNER_TMP
-    assert environment["PATH"] == RUNNER_PATH
-    assert environment["GIT_CONFIG_GLOBAL"] == f"{APP_DIR}/gitconfig"
+async def test_refusals_and_failures_are_distinguished(repo: Path) -> None:
+    files = SandboxFiles(LocalSandbox(repo), str(repo))
+    with pytest.raises(FileOpRefused, match="does not exist"):
+        await files.request("read", path="missing.py")
+    with pytest.raises(RuntimeError, match="malformed request"):
+        await files.request("unknown-op")

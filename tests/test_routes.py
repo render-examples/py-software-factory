@@ -5,11 +5,14 @@ from typing import Any
 import pytest
 
 from factory.config import get_config
-from factory.gateway import Ignore, Start, route
+from factory.gateway import Ignore, Lookup, Start, ThreadState, WaitingRun, route
 from factory.schemas import AutopilotInput, PrReviewInput, SpecToPrInput, TriageInput
+from factory.threads import thread_key
 from tests.fixtures import REPO, REPOSITORY_CASES, RepositoryCase
 
 DELIVERY = "delivery-1"
+ISSUE = thread_key(f"github:{REPO}#issue-12")
+PR = thread_key(f"github:{REPO}#pr-34")
 SHA = "a" * 40
 
 
@@ -43,7 +46,7 @@ def pr_labeled(label: str, state: str = "open") -> dict[str, Any]:
 def comment(body: str, **issue: Any) -> dict[str, Any]:
     return envelope(
         action="created",
-        issue={"number": 12, "labels": [{"name": labels().triage}], **issue},
+        issue={"number": 12, **issue},
         comment={"id": 99, "body": body},
     )
 
@@ -56,7 +59,7 @@ class TestStarts:
     def test_triage_label_on_an_issue_starts_triage(self) -> None:
         r = route("issues", issue_labeled(labels().triage), DELIVERY)
         assert r == Start(
-            "triage", {"repo": REPO, "installation_id": 7, "issue": 12, "actor": "maintainer"}, DELIVERY, "issue#12"
+            "triage", {"repo": REPO, "installation_id": 7, "issue": 12, "actor": "maintainer"}, DELIVERY, ISSUE
         )
         assert isinstance(r, Start)
         TriageInput.model_validate(r.input)
@@ -78,24 +81,39 @@ class TestStarts:
     def test_autopilot_label_on_an_issue_starts_the_autopilot_task(self) -> None:
         r = route("issues", issue_labeled(labels().autopilot), DELIVERY)
         assert r == Start(
-            "autopilot", {"repo": REPO, "installation_id": 7, "issue": 12, "actor": "maintainer"}, DELIVERY, "issue#12"
+            "autopilot", {"repo": REPO, "installation_id": 7, "issue": 12, "actor": "maintainer"}, DELIVERY, ISSUE
         )
         assert isinstance(r, Start)
         AutopilotInput.model_validate(r.input)
 
-    def test_a_human_reply_continues_autopilot_while_its_label_remains(self) -> None:
-        r = route("issue_comment", comment("Here are the details.", labels=[{"name": labels().autopilot}]), DELIVERY)
-        assert isinstance(r, Start)
-        assert r.run == "autopilot"
-        assert r.input == {"repo": REPO, "installation_id": 7, "issue": 12, "actor": "maintainer", "comment_id": 99}
+    @pytest.mark.parametrize("task", ["triage", "autopilot"])
+    def test_a_reply_resumes_the_waiting_root_task_in_reply_mode(self, task: str) -> None:
+        r = route("issue_comment", comment("Here are the details."), DELIVERY)
+        assert isinstance(r, Lookup)
+        assert r.thread == ISSUE
+        decided = r.decide(ThreadState(WaitingRun(task, "trn-root")))
+        assert isinstance(decided, Start)
+        assert decided.run == task
+        assert decided.thread == ISSUE
+        assert decided.input == {
+            "repo": REPO,
+            "installation_id": 7,
+            "issue": 12,
+            "actor": "maintainer",
+            "comment_id": 99,
+            "reply_to": "trn-root",
+        }
 
-    def test_does_not_restart_autopilot_after_its_trigger_label_was_consumed(self) -> None:
-        assert route("issue_comment", comment("Unrelated note.", labels=[]), DELIVERY) == Ignore("issue not in triage")
+    @pytest.mark.parametrize("waiting", [None, WaitingRun("spec-to-pr", "trn-root")])
+    def test_a_comment_on_a_thread_that_is_not_waiting_starts_nothing(self, waiting: WaitingRun | None) -> None:
+        r = route("issue_comment", comment("Unrelated note.", labels=[{"name": labels().triage}]), DELIVERY)
+        assert isinstance(r, Lookup)
+        assert r.decide(ThreadState(waiting)) == Ignore("thread is not waiting for a reply")
 
     def test_pr_review_label_on_an_open_pr_starts_pr_review(self) -> None:
         r = route("pull_request", pr_labeled(labels().pr_review), DELIVERY)
         expected = {"repo": REPO, "installation_id": 7, "pr": 34, "head_sha": SHA, "actor": "maintainer"}
-        assert r == Start("pr-review", expected, DELIVERY, "pr#34")
+        assert r == Start("pr-review", expected, DELIVERY, PR)
         assert isinstance(r, Start)
         PrReviewInput.model_validate(r.input)
 
@@ -104,7 +122,7 @@ class TestStarts:
         assert isinstance(r, Start)
         assert r.run == "cancel"
         assert r.input == {"repo": REPO, "installation_id": 7, "number": 12, "kind": "issue", "actor": "maintainer"}
-        assert r.subject == "issue#12"
+        assert r.thread == ISSUE
 
     @pytest.mark.parametrize("case", REPOSITORY_CASES, ids=lambda c: c.repo)
     def test_routes_a_repository_only_from_its_own_base_branch(self, case: RepositoryCase) -> None:

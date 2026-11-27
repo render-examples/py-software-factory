@@ -43,23 +43,15 @@ class Marker(BaseModel):
 
 class StatusMarker(Marker):
     kind: ClassVar[str] = "status"
+    """Shown for people and debugging. Run state lives in Postgres; nothing parses this to decide anything."""
+
     run_id: str = Field(min_length=1)
     trace_id: str | None = Field(default=None, min_length=1)
     """Root Workflows run. Differs from run_id when this run is a subtask."""
-    root_stage: str | None = Field(default=None, min_length=1)
-    """Registered name of the root task, for cancellation telemetry."""
     stage: str = Field(min_length=1)
     title: str | None = Field(default=None, min_length=1)
     """The run's name as the comment shows it."""
     state: RunState
-    at: str | None = None
-    """ISO 8601"""
-    sandbox_id: str | None = Field(default=None, min_length=1)
-    """The running run's sandbox, so the run that stops it can terminate it."""
-
-    @property
-    def root_run_id(self) -> str:
-        return self.trace_id or self.run_id
 
 
 class SpecMarker(Marker):

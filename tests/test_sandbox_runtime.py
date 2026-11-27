@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import importlib
-import os
+import json
 import shlex
 import subprocess
-import sys
-import zipfile
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from render.client.errors import RateLimitError, ServerError
@@ -30,17 +27,15 @@ from render.experimental.sandbox.types import (
 from factory.config import RepoContext
 from factory.config_model import RepoConfig
 from factory.sandbox.client import (
-    ApiPacer,
-    PacedSandboxClient,
     RenderSandbox,
     SandboxApi,
+    SandboxClient,
     SandboxTimings,
-    measure_sandbox_requests,
 )
 from factory.sandbox.egress import builder_egress, task_egress
-from factory.sandbox.open import open_sandbox
+from factory.sandbox.open import OpenSandboxDeps, open_sandbox
 from factory.sandbox.shell import shq
-from factory.sandbox.snapshot import _env_file, build_runner_bundle, credential_file
+from factory.sandbox.snapshot import RUNTIME_SCRIPTS, SCRIPTS_DIR, _env_file, credential_file, scripts_hash
 from factory.sandbox.types import BranchRef, ExecResult, PullRef
 
 
@@ -150,109 +145,24 @@ def repo(*, base_branch: str = "main", egress: tuple[str, ...] | str = ()) -> Re
 
 
 @pytest.mark.asyncio
-async def test_process_pacer_reserves_slots_across_callers() -> None:
+async def test_calls_are_not_paced() -> None:
     clock = FakeClock()
-    pacer = ApiPacer(0.6, clock=clock, sleep=clock.sleep)
-
-    await pacer.wait()
-    await pacer.wait()
-    await pacer.wait()
-
-    assert clock.sleeps == pytest.approx([0.6, 0.6])
-
-
-@pytest.mark.asyncio
-async def test_client_builds_default_pacer_from_configured_interval() -> None:
-    clock = FakeClock()
-    client = PacedSandboxClient(
-        cast(SandboxApi, FakeApi()),
-        timings=SandboxTimings(min_request_interval_seconds=0.7),
-        clock=clock,
-        sleep=clock.sleep,
-    )
+    client = SandboxClient(cast(SandboxApi, FakeApi()), clock=clock, sleep=clock.sleep)
 
     async def operation() -> str:
         return "ok"
 
-    await client.call(operation)
-    await client.call(operation)
-    assert clock.sleeps == pytest.approx([0.7])
-
-
-@pytest.mark.asyncio
-async def test_explicit_pacer_override_wins_over_timing_config() -> None:
-    clock = FakeClock()
-    client = PacedSandboxClient(
-        cast(SandboxApi, FakeApi()),
-        timings=SandboxTimings(min_request_interval_seconds=9),
-        pacer=ApiPacer(0.25, clock=clock, sleep=clock.sleep),
-        clock=clock,
-        sleep=clock.sleep,
-    )
-
-    async def operation() -> str:
-        return "ok"
-
-    await client.call(operation)
-    await client.call(operation)
-    assert clock.sleeps == pytest.approx([0.25])
-
-
-@pytest.mark.asyncio
-async def test_request_meter_isolates_concurrent_agent_contexts() -> None:
-    client = PacedSandboxClient(
-        cast(SandboxApi, FakeApi()),
-        timings=SandboxTimings(min_request_interval_seconds=0),
-    )
-
-    async def operation() -> str:
-        await asyncio.sleep(0)
-        return "ok"
-
-    async def measured(count: int) -> int:
-        with measure_sandbox_requests() as meter:
-            await asyncio.gather(*(client.call(operation) for _ in range(count)))
-            return meter.count
-
-    assert await asyncio.gather(measured(2), measured(3)) == [2, 3]
-
-
-@pytest.mark.asyncio
-async def test_request_meter_counts_each_retry_attempt() -> None:
-    client = PacedSandboxClient(
-        cast(SandboxApi, FakeApi()),
-        timings=SandboxTimings(
-            min_request_interval_seconds=0,
-            retry_base_seconds=0,
-            retry_attempts=3,
-        ),
-    )
-    attempts = 0
-
-    async def operation() -> str:
-        nonlocal attempts
-        attempts += 1
-        if attempts < 3:
-            raise RateLimitError("slow down", status_code=429)
-        return "ok"
-
-    with measure_sandbox_requests() as meter:
-        assert await client.call(operation) == "ok"
-    assert meter.count == 3
+    for _ in range(5):
+        await client.call(operation)
+    assert clock.sleeps == []
 
 
 @pytest.mark.asyncio
 async def test_call_retries_only_429_and_503_with_capped_backoff() -> None:
     clock = FakeClock()
-    client = PacedSandboxClient(
+    client = SandboxClient(
         cast(SandboxApi, FakeApi()),
-        timings=SandboxTimings(
-            min_request_interval_seconds=0,
-            retry_base_seconds=2,
-            retry_max_seconds=3,
-            retry_attempts=4,
-        ),
-        pacer=ApiPacer(0, clock=clock, sleep=clock.sleep),
+        timings=SandboxTimings(retry_base_seconds=2, retry_max_seconds=3, retry_attempts=4),
         sleep=clock.sleep,
         clock=clock,
     )
@@ -284,11 +194,7 @@ async def test_collected_exec_keeps_only_256_kib_tail_per_stream() -> None:
         SandboxExecOutput("stderr", "b" * (260 * 1024)),
         SandboxExecExit(9),
     ]
-    client = PacedSandboxClient(
-        cast(SandboxApi, api),
-        pacer=ApiPacer(0),
-        timings=SandboxTimings(min_request_interval_seconds=0),
-    )
+    client = SandboxClient(cast(SandboxApi, api))
 
     result = await client.exec("sbx-fake", "large")
 
@@ -300,7 +206,7 @@ async def test_collected_exec_keeps_only_256_kib_tail_per_stream() -> None:
 @pytest.mark.asyncio
 async def test_close_is_idempotent_and_missing_sandbox_counts_as_closed() -> None:
     api = FakeApi()
-    client = PacedSandboxClient(cast(SandboxApi, api), pacer=ApiPacer(0))
+    client = SandboxClient(cast(SandboxApi, api))
     sandbox = RenderSandbox("sbx-fake", client)
 
     await sandbox.close()
@@ -311,7 +217,7 @@ async def test_close_is_idempotent_and_missing_sandbox_counts_as_closed() -> Non
     missing_api.not_found_on_terminate = True
     missing = RenderSandbox(
         "sbx-gone",
-        PacedSandboxClient(cast(SandboxApi, missing_api), pacer=ApiPacer(0)),
+        SandboxClient(cast(SandboxApi, missing_api)),
     )
     await missing.close()
     await missing.close()
@@ -322,7 +228,7 @@ async def test_close_is_idempotent_and_missing_sandbox_counts_as_closed() -> Non
 async def test_short_exec_uses_sdk_stream() -> None:
     api = FakeApi()
     api.events = [SandboxExecOutput("stdout", "ok\n"), SandboxExecExit(0)]
-    client = PacedSandboxClient(cast(SandboxApi, api), pacer=ApiPacer(0))
+    client = SandboxClient(cast(SandboxApi, api))
     sandbox = RenderSandbox("sbx-fake", client)
 
     result = await sandbox.exec("printf ok", timeout_seconds=30)
@@ -334,18 +240,26 @@ async def test_short_exec_uses_sdk_stream() -> None:
 @pytest.mark.asyncio
 async def test_long_exec_uses_private_detached_transport_and_quotes_command() -> None:
     api = FakeApi()
+    detached: list[Path] = []
 
     def events(command: str) -> list[SandboxExecEvent]:
-        if "if [ -f" in command:
-            return [SandboxExecOutput("stdout", "7\n"), SandboxExecExit(0)]
-        if command.startswith("tail") and command.endswith("/stdout'"):
-            return [SandboxExecOutput("stdout", "out\n"), SandboxExecExit(0)]
-        if command.startswith("tail") and command.endswith("/stderr'"):
-            return [SandboxExecOutput("stdout", "err\n"), SandboxExecExit(0)]
-        return [SandboxExecExit(0)]
+        if "detach.sh" in command:
+            directory = Path(shlex.split(command)[2])
+            directory.mkdir()
+            (directory / "stdout").write_text("out\nmore\n")
+            (directory / "stderr").write_text("err\n")
+            (directory / "exit").write_text("7\n")
+            detached.append(directory)
+            return [SandboxExecExit(0)]
+        result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+        return [
+            SandboxExecOutput("stdout", result.stdout),
+            SandboxExecOutput("stderr", result.stderr),
+            SandboxExecExit(result.returncode),
+        ]
 
     api.event_factory = events
-    client = PacedSandboxClient(cast(SandboxApi, api), pacer=ApiPacer(0))
+    client = SandboxClient(cast(SandboxApi, api))
     sandbox = RenderSandbox("sbx-fake", client)
     hostile = "printf '%s' okay; touch /tmp/should-not-be-a-host-command"
 
@@ -353,24 +267,20 @@ async def test_long_exec_uses_private_detached_transport_and_quotes_command() ->
 
     start_argv = shlex.split(api.commands[0])
     assert start_argv[-1] == hostile
-    assert result.exit_code == 7
-    assert result.stdout == "out\n"
-    assert result.stderr == "err\n"
+    assert result == ExecResult(7, "out\nmore\n", "err\n")
     assert hostile not in api.commands[1:]
+    # Start, one poll that returns the status and both tails, and cleanup.
+    assert len(api.commands) == 3
+    assert not detached[0].exists()
 
 
-def test_egress_uses_only_trusted_hosts_and_builder_has_no_model_host() -> None:
+def test_task_egress_reaches_only_github_and_the_repository_hosts() -> None:
     context = repo(egress=("packages.acme.test",))
 
-    task = task_egress(context, ("api.anthropic.com", "api.anthropic.com"))
+    task = task_egress(context)
     builder = builder_egress(context)
 
-    assert [rule.domain for rule in task.rules] == [
-        "github.com",
-        "api.anthropic.com",
-        "packages.acme.test",
-    ]
-    assert "api.anthropic.com" not in [rule.domain for rule in builder.rules]
+    assert [rule.domain for rule in task.rules] == ["github.com", "packages.acme.test"]
     assert {"pypi.org", "files.pythonhosted.org", "release-assets.githubusercontent.com"} <= {
         rule.domain for rule in builder.rules
     }
@@ -379,7 +289,7 @@ def test_egress_uses_only_trusted_hosts_and_builder_has_no_model_host() -> None:
 def test_allow_all_repo_remains_explicit() -> None:
     config = RepoConfig(base_branch="main", verify=("pytest",), egress="allow-all")
     context = RepoContext("acme", "widget", "acme/widget", 7, config)
-    assert task_egress(context, ("api.anthropic.com",)) == NetworkPolicy(type="allow-all")
+    assert task_egress(context) == NetworkPolicy(type="allow-all")
 
 
 @pytest.mark.asyncio
@@ -420,7 +330,7 @@ async def test_resolve_base_head_preserves_slashes_in_git_ref_path(monkeypatch: 
 @pytest.mark.asyncio
 async def test_untrusted_refs_are_rejected_before_any_api_call(ref: BranchRef | PullRef) -> None:
     api = FakeApi()
-    client = PacedSandboxClient(cast(SandboxApi, api), pacer=ApiPacer(0))
+    client = SandboxClient(cast(SandboxApi, api))
     with pytest.raises(ValueError, match=r"unsupported|invalid"):
         await open_sandbox(repo(), ref, client=client, sandbox_group_id="sbg-test")
 
@@ -433,58 +343,101 @@ def test_shell_arguments_and_tokens_stay_out_of_command_syntax() -> None:
         credential_file("secret\ninjected")
 
 
-def test_runner_bundle_is_deterministic_and_scoped(tmp_path: Path) -> None:
-    (tmp_path / "factory" / "agents").mkdir(parents=True)
-    (tmp_path / "factory" / "schemas").mkdir()
-    (tmp_path / "factory" / "sandbox").mkdir()
-    (tmp_path / "factory" / "agents" / "a.py").write_text("A = 1\n")
-    (tmp_path / "factory" / "schemas" / "s.py").write_text("S = 2\n")
-    (tmp_path / "factory" / "sandbox" / "types.py").write_text("ROOT = '/opt/factory'\n")
-    (tmp_path / "factory" / "identifiers.py").write_text("SAFE = True\n")
-    (tmp_path / "factory" / "secret.py").write_text("TOKEN = 'do not package'\n")
+class SnapshotApi(FakeApi):
+    """Serves a manifest per created sandbox, and enough command output for open_sandbox to finish."""
 
-    first = build_runner_bundle(tmp_path)
-    second = build_runner_bundle(tmp_path)
+    def __init__(self, scripts: list[str]) -> None:
+        super().__init__()
+        self.scripts = scripts
+        self.created = 0
+        self.event_factory = self.events_for
 
-    assert first == second
-    assert b"do not package" not in first.data
+    async def create(self, **kwargs: object) -> SdkSandbox:
+        self.created += 1
+        return cast(SdkSandbox, SimpleNamespace(id=f"sbx-{self.created}", status="running"))
+
+    def events_for(self, command: str) -> list[SandboxExecEvent]:
+        if "rev-parse" in command:
+            return [SandboxExecOutput("stdout", "a" * 40 + "\n"), SandboxExecExit(0)]
+        if command.startswith("if [ -f"):
+            return [SandboxExecOutput("stdout", "0\n"), SandboxExecExit(0)]
+        return [SandboxExecExit(0)]
+
+    async def copy_to(self, sandbox_id: str, local_path: str | Path, remote_path: str) -> None:
+        return None
+
+    async def copy_from(self, sandbox_id: str, remote_path: str, local_path: str | Path) -> str:
+        assert remote_path.endswith("/manifest.json")
+        manifest = {
+            "repo": "acme/widget",
+            "baseBranch": "main",
+            "sha": "b" * 40,
+            "lockfileHash": "c" * 64,
+            "install": None,
+            "createdAt": "2026-01-01T00:00:00+00:00",
+        }
+        scripts = self.scripts[min(self.created, len(self.scripts)) - 1]
+        if scripts:
+            manifest["scriptsHash"] = scripts
+        Path(local_path).write_text(json.dumps(manifest))
+        return str(local_path)
 
 
-def test_real_runner_bundle_imports_without_host_only_package_initializers(tmp_path: Path) -> None:
-    bundle = build_runner_bundle()
-    archive = tmp_path / "runner.zip"
-    archive.write_bytes(bundle.data)
-    with zipfile.ZipFile(archive) as zipped:
-        assert zipped.read("factory/agents/__init__.py") == b""
-        assert "factory/identifiers.py" in zipped.namelist()
-        assert "factory/sandbox/types.py" in zipped.namelist()
-    environment = {**os.environ, "PYTHONPATH": str(archive)}
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import factory, factory.runner.main; print(factory.__file__)",
-        ],
-        cwd=tmp_path,
-        env=environment,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    assert str(archive) in result.stdout
+def snapshot_deps(builds: list[str]) -> OpenSandboxDeps:
+    async def token(_repo: RepoContext) -> str:
+        return "token"
+
+    async def head(_repo: RepoContext) -> str:
+        return "d" * 40
+
+    async def build(_client: object, _repo: RepoContext, sha: str, **_kwargs: object) -> object:
+        builds.append(sha)
+        return None
+
+    return OpenSandboxDeps(read_token=token, resolve_base_head=head, build_snapshot=cast(Any, build))
 
 
 @pytest.mark.asyncio
-async def test_open_failure_after_creation_terminates_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
-    module = importlib.import_module("factory.sandbox.open")
-    api = FakeApi()
-    client = PacedSandboxClient(cast(SandboxApi, api), pacer=ApiPacer(0))
-
-    async def fail_bundle(sandbox: RenderSandbox, bundle: object = None) -> bool:
-        raise RuntimeError("bad runner bundle")
-
-    monkeypatch.setattr(module, "ensure_runner_bundle", fail_bundle)
-    with pytest.raises(RuntimeError, match="bad runner bundle"):
-        await module.open_sandbox(repo(), BranchRef("main"), client=client, sandbox_group_id="sbg-test")
-
+async def test_a_snapshot_with_other_scripts_is_rebuilt_once_and_reopened() -> None:
+    api = SnapshotApi(["", scripts_hash()])
+    builds: list[str] = []
+    opened = await open_sandbox(
+        repo(),
+        BranchRef("main"),
+        client=SandboxClient(cast(SandboxApi, api)),
+        sandbox_group_id="sbg-test",
+        deps=snapshot_deps(builds),
+    )
+    assert opened.id == "sbx-2"
+    assert builds == ["d" * 40]
     assert api.terminate_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_that_is_still_stale_fails_and_cleans_up() -> None:
+    api = SnapshotApi(["0" * 64, "0" * 64])
+    with pytest.raises(RuntimeError, match="still has other factory scripts"):
+        await open_sandbox(
+            repo(),
+            BranchRef("main"),
+            client=SandboxClient(cast(SandboxApi, api)),
+            sandbox_group_id="sbg-test",
+            deps=snapshot_deps([]),
+        )
+    assert api.terminate_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_open_failure_after_creation_terminates_sandbox() -> None:
+    api = FakeApi()
+    with pytest.raises(AssertionError, match="unexpected download"):
+        await open_sandbox(
+            repo(), BranchRef("main"), client=SandboxClient(cast(SandboxApi, api)), sandbox_group_id="sbg-test"
+        )
+    assert api.terminate_calls == 1
+
+
+def test_scripts_hash_covers_every_installed_script() -> None:
+    assert "fileops.py" in RUNTIME_SCRIPTS
+    assert all((SCRIPTS_DIR / name).is_file() for name in RUNTIME_SCRIPTS)
+    assert scripts_hash() == scripts_hash()

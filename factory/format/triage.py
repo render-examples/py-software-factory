@@ -22,6 +22,6 @@ def triage_decline_body(rationale: str) -> str:
     return fit_around(
         "The factory declined this issue:\n\n",
         sanitize(rationale),
-        f"\n\nTo try again, remove and reapply the {code_span(get_config().labels.triage)} label.",
+        f"\n\nTo try again, apply the {code_span(get_config().labels.triage)} label again.",
         BODY_MAX_CHARS,
     )

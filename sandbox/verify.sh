@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Verifies a factory sandbox: the builder before it is snapshotted, and every sandbox restored from the snapshot.
 # Fails unless the layout, Python runtime, credential hygiene, checkout, and permissions are as built.
-# The model key is brokered and never enters this process, so there is no execute-only/non-dumpable probe.
 # Usage: verify.sh
 set -euo pipefail
 
@@ -18,14 +17,12 @@ as_runner() { bash "$app/as-runner.sh" "$@"; }
 # ── Layout and tools ─────────────────────────────────────────────────────
 
 for d in "$FACTORY_APP_DIR" "$FACTORY_REPO_DIR" "$FACTORY_SCRATCH_DIR"; do [ -d "$d" ] || fail "missing $d"; done
-for f in as-runner.sh run-agent.sh detach.sh lockfile-hash.sh build/git-credential-staged.sh build/scrub-credentials.sh runner.zip runner.sha256 manifest.json; do
+for f in as-runner.sh fileops.py detach.sh lockfile-hash.sh build/git-credential-staged.sh build/scrub-credentials.sh manifest.json; do
 	[ -f "$FACTORY_APP_DIR/$f" ] || fail "missing $FACTORY_APP_DIR/$f"
 done
 for tool in git rg timeout sha256sum; do PATH="$FACTORY_PATH" command -v "$tool" >/dev/null || fail "missing $tool"; done
 python_version=$("$FACTORY_PYTHON" -c 'import platform; print(platform.python_version())') || fail "python does not run"
 case "$python_version" in 3.12.*) ;; *) fail "python $python_version is not 3.12" ;; esac
-bundle_hash=$(sha256sum "$FACTORY_APP_DIR/runner.zip" | cut -d' ' -f1)
-[ "$bundle_hash" = "$(<"$FACTORY_APP_DIR/runner.sha256")" ] || fail "runner.zip hash mismatch"
 
 # ── Credential hygiene ───────────────────────────────────────────────────
 # No stored credentials or credential helpers may survive into the snapshot.
@@ -76,6 +73,5 @@ print(json.dumps({
     "runAs": os.environ["FACTORY_RUN_AS"],
     "uid": os.getuid(),
     "python": platform.python_version(),
-    "protocol": 3,
 }))
 '

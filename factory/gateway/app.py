@@ -11,14 +11,27 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+import logfire
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from factory.config import RunName
+from factory.db import Db, VersionConflict, append, read_stream
 from factory.events import warn
 from factory.gateway.body import read_body
-from factory.gateway.routes import Ignore, Invalid, route
+from factory.gateway.routes import (
+    Decision,
+    Ignore,
+    Invalid,
+    Lookup,
+    Start,
+    delivery_event,
+    delivery_stream,
+    recorded_decision,
+    route,
+)
 from factory.gateway.signature import verify_signature
+from factory.gateway.state import thread_state
 
 StartRun = Callable[[RunName, dict[str, Any], str], Awaitable[str]]
 """Starts a task run with an idempotency key, and returns its run ID."""
@@ -36,6 +49,31 @@ _ROOT_TEXT = (
 class GatewayDeps:
     start_run: StartRun
     webhook_secret: str
+    db: Db
+
+
+async def decide(db: Db, event: str, payload: Any, delivery_id: str) -> Decision:
+    """The delivery's decision, recorded before anything starts. A redelivery replays the recorded decision instead
+    of routing again against state that may have moved on."""
+
+    async def recorded() -> Decision | None:
+        events = await read_stream(db, delivery_stream(delivery_id), 0, 1)
+        return recorded_decision(events[0]) if events else None
+
+    earlier = await recorded()
+    if earlier is not None:
+        return earlier
+    routed = route(event, payload, delivery_id)
+    decision = routed.decide(await thread_state(db, routed.thread)) if isinstance(routed, Lookup) else routed
+    try:
+        async with db.transaction() as tx:
+            appended = await append(tx, delivery_event(delivery_id, event, decision))
+    except VersionConflict:
+        # A concurrent redelivery recorded first; the stream only ever holds this delivery's decision.
+        appended = None
+    if appended is None:
+        return await recorded() or decision
+    return decision
 
 
 def create_gateway(deps: GatewayDeps) -> FastAPI:
@@ -73,16 +111,29 @@ def create_gateway(deps: GatewayDeps) -> FastAPI:
         except ValueError:
             return JSONResponse({"error": "invalid json"}, status_code=400)
 
-        decision = route(event, payload, delivery_id)
+        with logfire.span("GitHub {event} delivery", event=event, delivery_id=delivery_id) as span:
+            return await deliver(event, payload, delivery_id, span)
+
+    async def deliver(event: str, payload: Any, delivery_id: str, span: logfire.LogfireSpan) -> JSONResponse:
+        try:
+            decision = await decide(deps.db, event, payload, delivery_id)
+        except Exception as error:
+            warn("could not record delivery", delivery_id=delivery_id, event=event, error=str(error))
+            # A 5xx marks the delivery failed in GitHub, where it can be redelivered by hand.
+            return JSONResponse({"error": "could not record delivery"}, status_code=502)
         if isinstance(decision, Ignore):
+            span.set_attributes({"decision": "ignore", "reason": decision.reason})
             return JSONResponse({"ignored": decision.reason})
+        span.set_attributes({"decision": "start" if isinstance(decision, Start) else "invalid", "task": decision.run})
+        if decision.thread:
+            span.set_attribute("thread", decision.thread)
         if isinstance(decision, Invalid):
             warn(
                 "authenticated delivery produced an invalid run input",
                 delivery_id=delivery_id,
                 event=event,
                 run=decision.run,
-                subject=decision.subject,
+                thread=decision.thread,
                 reason=decision.reason,
             )
             return JSONResponse({"error": "invalid run input", "run": decision.run}, status_code=422)
@@ -95,11 +146,11 @@ def create_gateway(deps: GatewayDeps) -> FastAPI:
                 delivery_id=delivery_id,
                 event=event,
                 run=decision.run,
-                subject=decision.subject,
+                thread=decision.thread,
                 error=str(error),
             )
-            # A 5xx marks the delivery failed in GitHub, where it can be redelivered by hand.
             return JSONResponse({"error": "could not start run", "run": decision.run}, status_code=502)
+        span.set_attribute("run_id", run_id)
         return JSONResponse({"run_id": run_id, "run": decision.run}, status_code=202)
 
     return app

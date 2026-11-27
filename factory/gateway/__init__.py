@@ -1,7 +1,21 @@
-"""The webhook gateway. It must not import GitHub authentication, sandboxes, agents, claims, or workflows;
+"""The webhook gateway. It must not import GitHub authentication, sandboxes, agents, runs, or workflows;
 tests/test_boundaries.py enforces it."""
 
-from factory.gateway.app import GatewayDeps, StartRun, create_gateway
-from factory.gateway.routes import Ignore, Invalid, Route, Start, route
+from factory.gateway.app import GatewayDeps, StartRun, create_gateway, decide
+from factory.gateway.routes import Decision, Ignore, Invalid, Lookup, Route, Start, ThreadState, WaitingRun, route
 
-__all__ = ["GatewayDeps", "Ignore", "Invalid", "Route", "Start", "StartRun", "create_gateway", "route"]
+__all__ = [
+    "Decision",
+    "GatewayDeps",
+    "Ignore",
+    "Invalid",
+    "Lookup",
+    "Route",
+    "Start",
+    "StartRun",
+    "ThreadState",
+    "WaitingRun",
+    "create_gateway",
+    "decide",
+    "route",
+]

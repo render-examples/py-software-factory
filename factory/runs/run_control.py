@@ -7,8 +7,25 @@ from typing import Protocol
 from render import RenderAsync
 from render.client.errors import ClientError
 
-from factory.claims.status import RunNotFoundError
 from factory.sandbox.client import sandbox_client
+
+
+class RunNotFoundError(Exception):
+    """The run no longer exists. Raised by RunControl.get_status for a confirmed 404."""
+
+
+class RunControl(Protocol):
+    """The Render calls that stop a displaced trace, injectable for tests."""
+
+    async def get_status(self, run_id: str) -> str:
+        """The run's status. Raises RunNotFoundError when the run doesn't exist."""
+        ...
+
+    async def cancel(self, run_id: str) -> None: ...
+
+    async def terminate_sandbox(self, sandbox_id: str) -> None:
+        """Idempotent: a sandbox that no longer exists counts as terminated."""
+        ...
 
 
 class SandboxTerminator(Protocol):
