@@ -28,10 +28,12 @@ def build() -> Any:
     render = RenderAsync()
 
     async def start_run(run: RunName, task_input: dict[str, Any], idempotency_key: str) -> str:
+        if not clients:
+            clients.append(RenderAsync())  # Reads RENDER_API_KEY.
         context = tracing.carrier()
         traced = {**task_input, "trace_context": context} if context else task_input
         slug = f"{workflow_slug}/{run}"
-        return (await render.workflows.start_task(slug, [traced], idempotency_key=idempotency_key)).id
+        return (await clients[0].workflows.start_task(slug, [traced], idempotency_key=idempotency_key)).id
 
     app = create_gateway(GatewayDeps(start_run=start_run, webhook_secret=webhook_secret, db=db))
 

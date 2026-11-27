@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -36,12 +37,24 @@ _ROOT_TEXT = (
     "Health checks: GET /health and GET /ready. Setup and usage: docs/quickstart.md in your pydantic-software-factory "
     "repository.\n"
 )
+_MANIFEST_CODE = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+
+
+def _created_app_text(code: str) -> str:
+    return (
+        "GitHub App created.\n\n"
+        "Exchange this one-time code for the App's credentials within one hour, from your py-software-factory "
+        "checkout:\n\n"
+        f"  uv run setup-app --exchange-code {code} --credentials-output tmp/github-app.env\n\n"
+        "Then follow docs/runbooks/setup.md.\n"
+    )
 
 
 @dataclass(frozen=True)
 class GatewayDeps:
     start_run: StartRun
-    webhook_secret: str
+    webhook_secret: str | None
+    """None until the GitHub App exists; webhooks are refused until then."""
     db: Db
 
 
@@ -69,7 +82,10 @@ def create_gateway(deps: GatewayDeps) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.get("/", response_class=PlainTextResponse)
-    async def root() -> str:  # pyright: ignore[reportUnusedFunction]
+    async def root(code: str | None = None) -> str:  # pyright: ignore[reportUnusedFunction]
+        # GitHub's App manifest flow redirects here with a one-time code to exchange.
+        if code is not None and _MANIFEST_CODE.fullmatch(code):
+            return _created_app_text(code)
         return _ROOT_TEXT
 
     @app.get("/health")

@@ -134,6 +134,26 @@ async def test_tells_a_browser_the_headless_gateway_is_running_without_revealing
     assert offline.calls == []
 
 
+async def test_a_gateway_without_its_webhook_secret_serves_but_refuses_webhooks() -> None:
+    gateway = Gateway(Unreachable(), secret=None)
+    try:
+        assert (await gateway.client.get("/ready")).status_code == 200
+        res = await gateway.webhook(json.dumps(triage_payload()).encode(), signature="sha256=00")
+        assert res.status_code == 503
+        assert res.json() == {"error": "GITHUB_WEBHOOK_SECRET is not set"}
+        assert gateway.calls == []
+    finally:
+        await gateway.client.aclose()
+
+
+async def test_the_app_manifest_redirect_shows_the_exchange_command(offline: Gateway) -> None:
+    res = await offline.client.get("/", params={"code": "abc123_DEF-4"})
+    assert "uv run setup-app --exchange-code abc123_DEF-4 --credentials-output tmp/github-app.env" in res.text
+    odd = await offline.client.get("/", params={"code": "<script>"})
+    assert "software-factory gateway is running" in odd.text
+    assert "<script>" not in odd.text
+
+
 async def test_rejects_a_bad_signature_before_parsing_the_body(
     offline: Gateway, monkeypatch: pytest.MonkeyPatch
 ) -> None:
