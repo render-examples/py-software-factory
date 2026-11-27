@@ -1,5 +1,3 @@
-"""Sandbox egress policies built only from trusted repository configuration."""
-
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -16,12 +14,10 @@ GITHUB_RELEASE_ASSET_HOST = "release-assets.githubusercontent.com"
 
 
 def task_egress(repo: RepoContext) -> NetworkPolicy:
-    """Policy for a task sandbox. No model provider is reachable: agent loops run on the host."""
     return _policy(repo, (GITHUB_HOST,))
 
 
 def builder_egress(repo: RepoContext) -> NetworkPolicy:
-    """Policy for snapshot creation, where uv and Python are installed."""
     return _policy(
         repo,
         (

@@ -1,5 +1,3 @@
-"""Spend budgets: built from configuration, enforced by Pydantic AI Harness, counted in py-factory-db over asyncpg."""
-
 from __future__ import annotations
 
 from decimal import Decimal
@@ -26,14 +24,12 @@ EVENT_IDS = EventIds("trace-1", "run-1", "acme/repo", "issue#1")
 
 
 def listing_then_submit(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-    """Lists files once, then submits: two model requests."""
     if len(_messages) == 1:
         return ModelResponse(parts=[ToolCallPart("list_files", {"path": "."})])
     return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, TRIAGE_OUTPUT)])
 
 
 def submit(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-    """Submits at once: one model request."""
     return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, TRIAGE_OUTPUT)])
 
 
@@ -86,12 +82,10 @@ async def test_runs_share_a_daily_budget_counted_in_factory_db(db: Db, tmp_path:
             spend=SpendLimits[AgentDeps](budgets=[budget], store=store),
         )
 
-    # The first request is allowed and spends the budget; the next one, in a later run, is refused.
     await triage("acme/repo")
     with pytest.raises(AgentError) as raised:
         await triage("acme/repo")
     assert raised.value.code == "spend_limit"
-    # Another repository has its own budget.
     await triage("acme/other")
     counters = await db.query("select count(*) as rows from spend_test_counters")
     assert counters[0]["rows"] == 2

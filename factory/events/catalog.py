@@ -1,5 +1,3 @@
-"""Every event the log records. A payload's shape is part of the log's contract: change it with a new version."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

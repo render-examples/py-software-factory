@@ -1,6 +1,3 @@
-"""Maps one GitHub delivery to the run it starts, or why it starts nothing. No I/O: a decision that depends on the
-thread's state comes back as a Lookup for the caller to resolve."""
-
 from __future__ import annotations
 
 import re
@@ -30,7 +27,6 @@ from factory.threads import GitHubThread, ThreadKey, github_thread
 class Start:
     run: RunName
     input: dict[str, Any]
-    """Already validated with the run's input model, as JSON."""
     idempotency_key: str
     thread: ThreadKey | None = None
 
@@ -42,9 +38,6 @@ class Ignore:
 
 @dataclass(frozen=True)
 class Invalid:
-    """An authenticated delivery that maps to a run but not to a valid input for it: a bug worth a failed
-    delivery."""
-
     run: RunName
     reason: str
     thread: ThreadKey | None = None
@@ -62,7 +55,6 @@ class WaitingRun:
 @dataclass(frozen=True)
 class ThreadState:
     waiting: WaitingRun | None
-    """The thread's latest trace root, when it finished waiting for a reply."""
 
 
 @dataclass(frozen=True)
@@ -212,7 +204,6 @@ def route(event: str, payload: Any, delivery_id: str) -> Route:
         if label == config.labels.triage:
             return start(Tasks.TRIAGE, TriageInput, {"issue": issue.number, "actor": actor}, thread)
         if label == config.labels.spec_approved:
-            # GitHub bumps updated_at when the label is applied.
             approval = {"kind": "label", "labeled_at": issue.updated_at}
             fields = {"issue": issue.number, "actor": actor, "approval": approval}
             return start(Tasks.SPEC_TO_PR, SpecToPrInput, fields, thread)
@@ -290,7 +281,6 @@ def delivery_stream(delivery_id: str) -> str:
 
 
 def delivery_event(delivery_id: str, event: str, decision: Decision) -> NewEvent[DeliveryReceived]:
-    """The decision as recorded. Its stream name is also its idempotency key, so a delivery is recorded once."""
     if isinstance(decision, Ignore):
         payload = DeliveryReceived(event=event, ignored=decision.reason[:200])
         thread = None

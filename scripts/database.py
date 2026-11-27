@@ -1,5 +1,3 @@
-"""Database reachability and migration checks shared by preflight and doctor."""
-
 from __future__ import annotations
 
 import asyncio
@@ -47,7 +45,6 @@ class _FactoryDbProbe:
 
 
 def url_secrets(url: str) -> list[str]:
-    """Every form of a connection string's credentials that must never reach output."""
     secrets = [url]
     try:
         parts = urlsplit(url)
@@ -58,7 +55,6 @@ def url_secrets(url: str) -> list[str]:
         if at:
             user, _, password = userinfo.partition(":")
             secrets += [userinfo, unquote(userinfo), password, unquote(password)]
-            # A very short user name would redact ordinary words; it is not a secret on its own.
             if len(user) >= 4:
                 secrets += [user, unquote(user)]
         query = parse_qs(parts.query)
@@ -69,7 +65,6 @@ def url_secrets(url: str) -> list[str]:
 
 
 def database_checks(environment: Mapping[str, str], *, open_db: OpenDb | None = None) -> list[Check]:
-    """Check DATABASE_URL when it is set; otherwise report a non-blocking skip."""
     url = environment.get("DATABASE_URL", "").strip()
     if not url:
         return [
@@ -84,7 +79,6 @@ def database_checks(environment: Mapping[str, str], *, open_db: OpenDb | None = 
 
 
 def check_database(url: str, *, open_db: OpenDb | None = None) -> list[Check]:
-    """Connect with `select 1` and report pending migrations. Details never contain the URL or its credentials."""
     with _quiet_driver_logs():
         return asyncio.run(check_database_async(url, open_db=open_db))
 
@@ -134,7 +128,6 @@ def _describe(error: BaseException, secrets: list[str]) -> str:
 
 @contextmanager
 def _quiet_driver_logs() -> Generator[None]:
-    # asyncpg's pool can log connection failures (host and user included) through logging's stderr fallback.
     logger = logging.getLogger("asyncpg")
     previous = logger.level
     logger.setLevel(logging.CRITICAL + 1)

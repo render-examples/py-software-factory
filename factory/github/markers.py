@@ -1,9 +1,3 @@
-"""Hidden markers on factory-written comments: `<!-- software-factory:<kind> <base64url JSON> -->`.
-
-They're how a run finds its own earlier writes in GitHub, so they're trusted only on comments the App's bot
-authored. The JSON matches the TypeScript factory's, so either implementation reads the other's comments.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -23,12 +17,9 @@ from factory.github.types import IssueComment
 RunState = Literal["running", "done", "failed", "cancelled", "rejected"]
 
 _MAX_MARKER_CHARS = 48_000
-"""GitHub caps a comment at 65,536 characters; the marker leaves room for the readable part."""
 
 
 class Marker(BaseModel):
-    """Unknown keys are dropped, not rejected, so a marker written by a newer version still reads."""
-
     kind: ClassVar[str]
     model_config = ConfigDict(
         extra="ignore",
@@ -43,14 +34,11 @@ class Marker(BaseModel):
 
 class StatusMarker(Marker):
     kind: ClassVar[str] = "status"
-    """Shown for people and debugging. Run state lives in Postgres; nothing parses this to decide anything."""
 
     run_id: str = Field(min_length=1)
     trace_id: str | None = Field(default=None, min_length=1)
-    """Root Workflows run. Differs from run_id when this run is a subtask."""
     stage: str = Field(min_length=1)
     title: str | None = Field(default=None, min_length=1)
-    """The run's name as the comment shows it."""
     state: RunState
 
 
@@ -58,10 +46,8 @@ class SpecMarker(Marker):
     kind: ClassVar[str] = "spec"
     spec: Any
     hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    """sha256 of the spec's canonical JSON; a marker whose spec doesn't match it is ignored."""
     version: int = Field(gt=0)
     notes: Any = None
-    """The spec writer's notes, kept for later rounds. Not covered by `hash`."""
 
     @model_validator(mode="after")
     def _hash_matches(self) -> Self:
@@ -95,8 +81,6 @@ M = TypeVar("M", bound=Marker)
 
 
 def parse_marker(body: str, cls: type[M]) -> M | None:
-    """The marker's data, or None when the body has none or it doesn't decode and validate. Tolerates surrounding
-    edits, whitespace, and CRLF; with several markers of one kind, the last one wins."""
     pattern = re.compile(rf"<!--\s*software-factory:{re.escape(cls.kind)}\s+([A-Za-z0-9_-]+)\s*-->")
     matches = pattern.findall(body)
     if not matches:
@@ -112,8 +96,6 @@ def parse_marker(body: str, cls: type[M]) -> M | None:
 def find_marked_comment(
     comments: Sequence[IssueComment], cls: type[M], bot_login: str
 ) -> tuple[IssueComment, M] | None:
-    """The newest comment carrying a valid marker of this kind and authored by the App's bot. Anyone can paste a
-    marker."""
     bot = bot_login.lower()
     for comment in reversed(comments):
         if comment.author.login.lower() != bot:
@@ -125,12 +107,10 @@ def find_marked_comment(
 
 
 def content_hash(value: Any) -> str:
-    """sha256 of the value's canonical JSON (object keys sorted), so key order never changes the hash."""
     return hashlib.sha256(canonical_json(value).encode()).hexdigest()
 
 
 def canonical_json(value: Any) -> str:
-    """JSON with sorted keys and no whitespace, written as JavaScript's JSON.stringify writes it."""
     if isinstance(value, dict):
         obj: dict[Any, Any] = value  # pyright: ignore[reportUnknownVariableType]
         keys = sorted(str(k) for k in obj)

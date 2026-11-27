@@ -87,8 +87,6 @@ class ServiceRef:
 
 
 class RenderEnvApi(Protocol):
-    """The Render calls that move DATABASE_URL between a service and an env group."""
-
     def web_services(self) -> list[ServiceRef]: ...
 
     def service_env_var(self, service_id: str, key: str) -> str | None: ...
@@ -101,8 +99,6 @@ class RenderEnvApi(Protocol):
 
 
 class GeneratedRenderApi:
-    """`RenderEnvApi` over the SDK's generated client. Values it reads must never be formatted into messages."""
-
     def __init__(self, token: str, workspace: str) -> None:
         self._client = cast(AuthenticatedClient, Render(token=token, owner_id=workspace).client.internal)
         self._workspace = workspace
@@ -143,7 +139,6 @@ class GeneratedRenderApi:
         raise RuntimeError(f"could not read {key} on {service_id}: HTTP {int(response.status_code)}")
 
     def env_group_id(self, name: str) -> str | None:
-        # The API wraps each item as {"cursor", "envGroup"}, which the pinned SDK's list model can't parse.
         response = self._client.get_httpx_client().get(
             "/env-groups", params={"name": name, "ownerId": self._workspace, "limit": PAGE_SIZE}
         )
@@ -167,7 +162,6 @@ class GeneratedRenderApi:
 
 
 def env_groups(body: object) -> list[dict[str, Any]]:
-    """Env groups from a list response, whether its items are wrapped as {"envGroup": ...} or not."""
     if not isinstance(body, list):
         raise RuntimeError("env group list response is not a list")
     groups: list[dict[str, Any]] = []
@@ -193,7 +187,6 @@ def link_database(
     apply: bool,
     api: RenderEnvApi | None = None,
 ) -> list[str]:
-    """Copy the gateway's Blueprint-provided DATABASE_URL into the py-factory-workflows group, without echoing it."""
     if api is None:
         api = GeneratedRenderApi.from_environment(environment)
     gateways = [service for service in api.web_services() if GATEWAY_NAME_RE.fullmatch(service.name)]

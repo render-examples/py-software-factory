@@ -1,6 +1,3 @@
-"""Real-Postgres fixtures. Tests that use them are skipped unless TEST_DATABASE_URL names a server they may create
-databases on, such as `postgresql:///postgres`."""
-
 from __future__ import annotations
 
 import asyncio
@@ -29,14 +26,12 @@ async def _execute(statement: str) -> None:
 
 
 def _admin(statement: str) -> None:
-    """On its own thread and loop, so sync fixtures and async tests can both create databases."""
     with ThreadPoolExecutor(max_workers=1) as executor:
         executor.submit(asyncio.run, _execute(statement)).result()
 
 
 @contextmanager
 def temporary_database() -> Generator[str]:
-    """A new, empty database, dropped afterwards. Yields its connection string."""
     if not TEST_DATABASE_URL:
         pytest.skip(SKIP_REASON)
     name = f"sf_test_{uuid.uuid4().hex}"
@@ -57,7 +52,6 @@ async def _migrate(url: str) -> None:
 
 @pytest.fixture(scope="module")
 def database_url() -> Iterator[str]:
-    """One migrated database per test module."""
     with temporary_database() as url:
         asyncio.run(_migrate(url))
         yield url
@@ -65,7 +59,6 @@ def database_url() -> Iterator[str]:
 
 @pytest.fixture
 async def db(database_url: str) -> AsyncIterator[Db]:
-    """A pool on the module's database, emptied before each test."""
     pool = create_db(database_url, 5)
     await pool.query(f"truncate events, {', '.join(projection.table for projection in PROJECTIONS)}")
     try:

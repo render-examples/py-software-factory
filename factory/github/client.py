@@ -1,5 +1,3 @@
-"""Workflow-owned GitHub operations for one repository. Agents never get this."""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -43,9 +41,6 @@ def github_for(
     transport: httpx.AsyncBaseTransport | None = None,
     sleep: Sleep | None = None,
 ) -> GitHubClient:
-    """A client acting as the App installation that delivered the webhook. `token` overrides the installation
-    token, for tests and scripts."""
-
     async def installation_token() -> str:
         return await github_token(repo.installation_id, repo.name, transport=transport)
 
@@ -67,7 +62,6 @@ class GitHubClient:
         await self.http.aclose()
 
     async def bot_login(self) -> str:
-        """The App's bot login, `<app-slug>[bot]`, from GET /app with the App JWT. Cached per process."""
         key = self.http.api_url
         if key not in _bot_logins:
 
@@ -86,7 +80,6 @@ class GitHubClient:
         return _issue(await self.http.json("GET", f"{self._base}/issues/{number}"))
 
     async def list_issue_comments(self, number: int) -> list[IssueComment]:
-        """Every comment, oldest first."""
         return [_comment(c) for c in await self.http.paginate(f"{self._base}/issues/{number}/comments")]
 
     async def create_comment(self, number: int, body: str) -> IssueComment:
@@ -99,7 +92,6 @@ class GitHubClient:
         return _comment(raw)
 
     async def delete_comment(self, comment_id: int) -> None:
-        """A comment that is already gone (404) is fine."""
         try:
             await self.http.json("DELETE", f"{self._base}/issues/comments/{comment_id}")
         except GitHubError as error:
@@ -107,7 +99,6 @@ class GitHubClient:
                 raise
 
     async def ensure_label(self, name: str, color: str, description: str = "") -> None:
-        """Creates a repository label, confirming that a 422 really means it already exists."""
         try:
             await self.http.json(
                 "POST", f"{self._base}/labels", body={"name": name, "color": color, "description": description}
@@ -126,7 +117,6 @@ class GitHubClient:
         return True
 
     async def upsert_label(self, name: str, color: str, description: str = "") -> None:
-        """Create a label or update its color and description when it already exists."""
         body = {"name": name, "color": color, "description": description}
         try:
             await self.http.json("POST", f"{self._base}/labels", body=body)
@@ -148,7 +138,6 @@ class GitHubClient:
         )
 
     async def remove_label(self, number: int, label: str) -> None:
-        """A label that isn't on the issue (404) is fine."""
         try:
             await self.http.json("DELETE", f"{self._base}/issues/{number}/labels/{_segment(label)}")
         except GitHubError as error:
@@ -156,8 +145,6 @@ class GitHubClient:
                 raise
 
     async def get_permission(self, login: str) -> Permission:
-        """The user's repository permission. `permission` folds maintain into write and triage into read, so this
-        reads `role_name`, and for custom roles the permission flags. A non-collaborator (404) has "none"."""
         try:
             raw = await self.http.json("GET", f"{self._base}/collaborators/{_segment(login)}/permission")
         except GitHubError as error:
@@ -167,7 +154,6 @@ class GitHubClient:
         return _permission(raw)
 
     async def get_label_events(self, number: int, label: str) -> list[LabelEvent]:
-        """Times a label was applied to the issue or PR, oldest first."""
         events = await self.http.paginate(f"{self._base}/issues/{number}/events")
         return [
             LabelEvent(label, e["created_at"], _actor(e["actor"]) if e.get("actor") else None)
@@ -179,7 +165,6 @@ class GitHubClient:
         return _pull(await self.http.json("GET", f"{self._base}/pulls/{number}"))
 
     async def get_pull_diff(self, number: int) -> str:
-        """The PR's unified diff."""
         return await self.http.text("GET", f"{self._base}/pulls/{number}", accept="application/vnd.github.diff")
 
     async def list_pull_files(self, number: int) -> list[PullFile]:
@@ -209,8 +194,6 @@ class GitHubClient:
         event: Literal["COMMENT"],
         comments: Sequence[InlineComment],
     ) -> PullRequestReview:
-        """Posts a COMMENT review. The signature admits no other event: the factory never approves or requests
-        changes."""
         if event != "COMMENT":
             raise ValueError("the factory posts COMMENT reviews only")
         payload = {
@@ -222,11 +205,6 @@ class GitHubClient:
         return _review(await self.http.json("POST", f"{self._base}/pulls/{pr}/reviews", body=payload))
 
     async def ensure_pull(self, *, head: str, base: str, title: str, body: str) -> tuple[PullRequest, bool]:
-        """Makes a draft PR from `head` exist with this title and body.
-
-        A replay updates the draft it opened. Once a person marks that PR ready, automation leaves it alone.
-        Returns the PR and whether it was created.
-        """
         existing = await self._find_open_pull(head)
         if existing is not None:
             _require_draft(existing)
@@ -242,7 +220,6 @@ class GitHubClient:
             )
             return _pull(raw), True
         except GitHubError as error:
-            # Lost a race with another run, or a retried POST that had succeeded.
             if error.status == 422:
                 raced = await self._find_open_pull(head)
                 if raced is not None:
@@ -258,7 +235,6 @@ class GitHubClient:
 
 
 def reset_bot_login_cache() -> None:
-    """Test seam."""
     _bot_logins.clear()
 
 
@@ -342,7 +318,6 @@ def _pull(raw: Any) -> PullRequest:
 
 
 def _require_draft(pull: PullRequest) -> None:
-    """Automation may update its draft, but never takes over a PR a person marked ready."""
     if not pull.draft:
         raise RuntimeError(f"Refusing to update PR #{pull.number}: it is no longer a draft")
 

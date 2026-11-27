@@ -1,6 +1,3 @@
-"""Ownership of a thread. A run owns its issue or PR by starting on it: the trace whose run started last owns the
-thread until its runs finish."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -15,7 +12,6 @@ from factory.runs.types import Cleanup
 from factory.threads import ThreadKey
 
 _ACTIVE_STATUSES = frozenset({"pending", "running", "paused"})
-"""Render reports a parent waiting on a subtask as paused; it is still active."""
 
 START_ATTEMPTS = 4
 
@@ -41,12 +37,9 @@ class StartingRun:
 @dataclass(frozen=True)
 class Started:
     displaced: str | None
-    """The trace this run took the thread from, if any."""
 
 
 async def start_on_thread(db: Db, run: StartingRun) -> Started | None:
-    """Appends `run.started` to the thread at the version it read. None when the run may not start: a child whose
-    trace no longer owns the thread, or a reply to a run that is no longer the thread's latest or no longer waiting."""
     stream = f"thread:{run.thread}"
     for _ in range(START_ATTEMPTS):
         try:
@@ -94,9 +87,6 @@ class Stopped:
 
 
 async def stop_trace(db: Db, runs: RunControl, trace_id: str, *, by: str, summary: str) -> Stopped:
-    """Stops a displaced trace: cancels its task run if it's active, terminates the sandboxes its running runs
-    recorded, and records `run.stopped` for each. Render kills a cancelled run without running its cleanup, so this
-    is the only place its sandboxes get terminated and its end gets recorded."""
     rows = await db.query(
         "select run_id, thread, sandbox_id from runs where trace_id = $1 and state = 'running'", (trace_id,)
     )
@@ -120,7 +110,6 @@ async def stop_trace(db: Db, runs: RunControl, trace_id: str, *, by: str, summar
 
 
 async def retry_cleanup(db: Db, control: Callable[[], RunControl], thread: ThreadKey, by: str) -> Cleanup:
-    """Retries stopping what earlier runs on the thread couldn't confirm, and records each success."""
     rows = await db.query(
         "select run_id, cleanup_pending from runs where thread = $1 and cleanup_pending is not null", (thread,)
     )
@@ -143,7 +132,6 @@ async def retry_cleanup(db: Db, control: Callable[[], RunControl], thread: Threa
 
 
 async def cancel_if_active(runs: RunControl, task_run_id: str) -> Literal["stopped", "inactive", "failed"]:
-    """A confirmed 404 or a finished run is inactive. A run whose status can't be read is cancelled anyway."""
     try:
         if await runs.get_status(task_run_id) not in _ACTIVE_STATUSES:
             return "inactive"

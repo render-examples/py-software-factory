@@ -52,8 +52,6 @@ def sign(body: bytes, secret: str = SECRET) -> str:
 
 
 class Unreachable:
-    """A database that is down."""
-
     async def query(self, query: Query, params: Params = ()) -> list[Row]:
         raise ConnectionError("database is unreachable")
 
@@ -96,7 +94,6 @@ class Gateway:
 
 @pytest.fixture
 async def offline() -> AsyncIterator[Gateway]:
-    """A gateway whose database is down, for requests that must be answered before it is consulted."""
     gateway = Gateway(Unreachable())
     yield gateway
     await gateway.client.aclose()

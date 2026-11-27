@@ -8,13 +8,10 @@ from factory.format.text import BODY_MAX_CHARS, bullets, code_span, fit_around, 
 from factory.schemas import Implementation, Spec
 
 _TITLE_MAX_CHARS = 256
-"""GitHub's limit on a pull request title."""
 
 
 @dataclass(frozen=True)
 class VerifyResult:
-    """A verify command as the workflow ran it."""
-
     command: str
     passed: bool
     duration_ms: int | None = None
@@ -33,11 +30,6 @@ def pull_request_body(
     verification: Sequence[VerifyResult] | None = None,
     spec_url: str | None = None,
 ) -> str:
-    """The draft PR's body. The caller appends its hidden marker.
-
-    `verification` is the workflow's own verify run. Without it, the implementer's self-reported results are shown
-    as such.
-    """
     sections = [
         f"## Summary\n\n{sanitize(implementation.summary)}",
         f"## Acceptance criteria\n\n{acceptance_checklist(spec)}",
@@ -64,7 +56,6 @@ def pull_request_body(
 
 
 def verification_table(results: Sequence[VerifyResult]) -> str:
-    """A Markdown table of verify results."""
     if not results:
         return "No verify commands are configured."
     rows = [
@@ -80,5 +71,4 @@ def _result(passed: bool) -> str:
 
 
 def _escape_cell(text: str) -> str:
-    """Escapes characters that end a table cell."""
     return text.replace("|", "\\|")

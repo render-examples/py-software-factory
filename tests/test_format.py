@@ -19,7 +19,6 @@ _LIVE_MENTION = re.compile(r"(?<![A-Za-z0-9_.\-/@])@[A-Za-z0-9][\w-]*")
 
 
 def live_mentions(markdown: str) -> list[str]:
-    """Each @ GitHub would turn into a mention, outside fenced code."""
     found: list[str] = []
     in_fence = False
     for line in markdown.split("\n"):
@@ -122,7 +121,6 @@ def test_render_review_is_always_a_comment_review_with_inline_comments_in_github
 
 
 def test_render_review_keeps_the_body_and_inline_comments_within_githubs_limits() -> None:
-    """Formatting holds GitHub's limits even for input the schema would reject."""
     long_comment = comment().model_copy(update={"body": "z" * 50_000})
     oversized = Review.model_construct(summary="s" * 200_000, risk_tier="medium", comments=[long_comment] * 50)
     payload = render_review(oversized)

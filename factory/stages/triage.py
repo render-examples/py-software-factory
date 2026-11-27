@@ -1,5 +1,3 @@
-"""Plain Triage stage with all external behavior injected."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, replace

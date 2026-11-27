@@ -17,10 +17,7 @@ services:
           name: py-factory-db
           property: connectionString
 
-  # A workflow service can't reference a database here: every Blueprint sync fails
-  # with "depends on non-existent DB". After applying the Blueprint, run
-  # `uv run setup-render --link-database --apply` to copy the gateway's
-  # DATABASE_URL into the py-factory-workflows group, then redeploy py-factory-workflows.
+  # DATABASE_URL comes from `uv run setup-render --link-database --apply`.
   - type: workflow
     name: py-factory-workflows
     runtime: python
@@ -33,10 +30,6 @@ services:
       - key: RENDER_WORKFLOW_SLUG
         value: py-factory-workflows
 
-# Same region as the services so they use the internal URL. The empty allow list
-# blocks every connection from outside the workspace; add an operator IP in the
-# Dashboard only while running doctor or db-rebuild from a laptop. Keep a paid
-# plan: free Postgres expires after 30 days.
 databases:
   - name: py-factory-db
     region: oregon
@@ -44,10 +37,6 @@ databases:
     postgresMajorVersion: "17"
     ipAllowList: []
 
-# Blueprint-managed group shells make service wiring reproducible. Secret values
-# are added in the Dashboard or by an authorized setup operator; they are never
-# committed here. Environment groups do not support `sync: false`.
-# py-factory-workflows also receives DATABASE_URL from `setup-render --link-database`.
 envVarGroups:
   - name: py-factory-gateway
     envVars: []

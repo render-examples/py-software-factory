@@ -1,5 +1,3 @@
-"""Approved specification to reviewed, host-published draft-PR candidate."""
-
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable

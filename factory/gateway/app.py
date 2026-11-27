@@ -1,9 +1,3 @@
-"""The webhook gateway. It holds no GitHub credential and runs no model.
-
-Every response says what happened to the delivery; GitHub keeps them under the App's Recent Deliveries, so only
-failures the gateway can't explain there are logged.
-"""
-
 from __future__ import annotations
 
 import json
@@ -34,7 +28,6 @@ from factory.gateway.signature import verify_signature
 from factory.gateway.state import thread_state
 
 StartRun = Callable[[RunName, dict[str, Any], str], Awaitable[str]]
-"""Starts a task run with an idempotency key, and returns its run ID."""
 
 _ROOT_TEXT = (
     "software-factory gateway is running.\n\n"
@@ -53,9 +46,6 @@ class GatewayDeps:
 
 
 async def decide(db: Db, event: str, payload: Any, delivery_id: str) -> Decision:
-    """The delivery's decision, recorded before anything starts. A redelivery replays the recorded decision instead
-    of routing again against state that may have moved on."""
-
     async def recorded() -> Decision | None:
         events = await read_stream(db, delivery_stream(delivery_id), 0, 1)
         return recorded_decision(events[0]) if events else None
@@ -69,7 +59,6 @@ async def decide(db: Db, event: str, payload: Any, delivery_id: str) -> Decision
         async with db.transaction() as tx:
             appended = await append(tx, delivery_event(delivery_id, event, decision))
     except VersionConflict:
-        # A concurrent redelivery recorded first; the stream only ever holds this delivery's decision.
         appended = None
     if appended is None:
         return await recorded() or decision
@@ -79,7 +68,6 @@ async def decide(db: Db, event: str, payload: Any, delivery_id: str) -> Decision
 def create_gateway(deps: GatewayDeps) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
-    # The gateway has no UI; people who open its URL in a browser should see that it's running, not a 404.
     @app.get("/", response_class=PlainTextResponse)
     async def root() -> str:  # pyright: ignore[reportUnusedFunction]
         return _ROOT_TEXT
@@ -97,7 +85,6 @@ def create_gateway(deps: GatewayDeps) -> FastAPI:
         event = request.headers.get("x-github-event", "")
         delivery_id = request.headers.get("x-github-delivery", "")
 
-        # The signature covers the raw bytes, so nothing is parsed before it's verified.
         body = await read_body(request)
         if body is None:
             return JSONResponse({"error": "payload too large"}, status_code=413)
@@ -119,7 +106,6 @@ def create_gateway(deps: GatewayDeps) -> FastAPI:
             decision = await decide(deps.db, event, payload, delivery_id)
         except Exception as error:
             warn("could not record delivery", delivery_id=delivery_id, event=event, error=str(error))
-            # A 5xx marks the delivery failed in GitHub, where it can be redelivered by hand.
             return JSONResponse({"error": "could not record delivery"}, status_code=502)
         if isinstance(decision, Ignore):
             span.set_attributes({"decision": "ignore", "reason": decision.reason})

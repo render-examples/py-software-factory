@@ -1,5 +1,3 @@
-"""Snapshot naming, construction, and pruning."""
-
 from __future__ import annotations
 
 import asyncio
@@ -76,7 +74,6 @@ class BuiltSnapshot:
 
 
 def snapshot_name(repo: RepoContext) -> str:
-    """The reusable snapshot name for one configured repository."""
     return re.sub(r"[^A-Za-z0-9_.-]", "-", f"factory-{repo.owner}-{repo.name}")
 
 
@@ -96,7 +93,6 @@ async def read_token(repo: RepoContext) -> str:
 
 
 async def resolve_base_head(repo: RepoContext) -> str:
-    """Read the configured branch tip from GitHub's API, not repository-controlled git output."""
     if not is_safe_branch(repo.config.base_branch):
         raise ValueError(f"{repo.full_name}: unsupported base branch {repo.config.base_branch!r}")
     github = github_for(repo)
@@ -127,7 +123,6 @@ async def build_snapshot(
     sandbox_group_id: str | None = None,
     deps: SnapshotDeps | None = None,
 ) -> BuiltSnapshot:
-    """Build a credential-scrubbed filesystem snapshot and keep its newest two versions."""
     if not SHA1_RE.fullmatch(sha):
         raise ValueError(f"refusing to build {repo.full_name} at {sha!r}: not a commit SHA")
     branch = repo.config.base_branch
@@ -286,7 +281,6 @@ async def prune_snapshots(
     name: str,
     keep: int = KEEP_SNAPSHOTS,
 ) -> None:
-    """Best-effort pruning; a stale delete must never invalidate a fresh build."""
     if keep < 1:
         raise ValueError("keep must be positive")
     try:
@@ -363,7 +357,6 @@ def _manifest_json(manifest: SnapshotManifest) -> bytes:
 
 
 def scripts_hash() -> str:
-    """Everything this deployment installs into a sandbox's app directory."""
     digest = hashlib.sha256()
     for relative in RUNTIME_SCRIPTS:
         digest.update(f"{relative}\0".encode())

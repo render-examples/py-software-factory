@@ -1,5 +1,3 @@
-"""Host-owned verification helpers shared by implementation and review stages."""
-
 from __future__ import annotations
 
 import time
@@ -31,7 +29,6 @@ class VerifyRun:
 
 
 async def run_verify(sandbox: VerifySandbox, commands: tuple[str, ...]) -> list[VerifyRun]:
-    """Run configured commands in order; failures are results rather than exceptions."""
     runs: list[VerifyRun] = []
     for command in commands:
         with logfire.span("verify {command}", command=command) as span:

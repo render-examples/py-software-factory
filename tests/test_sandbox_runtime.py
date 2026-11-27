@@ -269,7 +269,6 @@ async def test_long_exec_uses_private_detached_transport_and_quotes_command() ->
     assert start_argv[-1] == hostile
     assert result == ExecResult(7, "out\nmore\n", "err\n")
     assert hostile not in api.commands[1:]
-    # Start, one poll that returns the status and both tails, and cleanup.
     assert len(api.commands) == 3
     assert not detached[0].exists()
 
@@ -344,8 +343,6 @@ def test_shell_arguments_and_tokens_stay_out_of_command_syntax() -> None:
 
 
 class SnapshotApi(FakeApi):
-    """Serves a manifest per created sandbox, and enough command output for open_sandbox to finish."""
-
     def __init__(self, scripts: list[str]) -> None:
         super().__init__()
         self.scripts = scripts

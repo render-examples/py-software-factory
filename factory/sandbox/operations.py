@@ -1,5 +1,3 @@
-"""Shared checked-command and configuration helpers for sandbox lifecycles."""
-
 from __future__ import annotations
 
 import os

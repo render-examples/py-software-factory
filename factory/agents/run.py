@@ -29,7 +29,6 @@ async def run_agent(
     model: Model | str | None = None,
     spend: SpendLimits[AgentDeps] | None = None,
 ) -> BaseModel:
-    """Run one registered agent against a sandbox and validate its output a second time on the host."""
     definition = get_agent(agent) if isinstance(agent, str) else agent
     if not message:
         raise ValueError("agent message must not be empty")

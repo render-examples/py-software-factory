@@ -71,7 +71,6 @@ def write(root: Path, path: str, data: str | bytes) -> None:
 
 
 def make_repo(tmp_path: Path) -> tuple[Path, str]:
-    """A repository with one base commit whose attributes would change bytes under `git archive`."""
     root = tmp_path / "repo"
     root.mkdir()
     git(root, "init", "-q", "-b", "main")
@@ -95,7 +94,6 @@ class Entry:
 
 
 def hash_tree(flat: dict[str, Entry]) -> str:
-    """Hashes a flat path map as git hashes the nested trees."""
     root: dict[str, Any] = {}
     for path, entry in flat.items():
         *dirs, name = path.split("/")
@@ -123,8 +121,6 @@ Interceptor = Callable[[str, str, dict[str, Any]], httpx.Response | None]
 
 @dataclass
 class FakeGitHub:
-    """An in-memory Git Data API."""
-
     blobs: dict[str, bytes] = field(default_factory=dict[str, bytes])
     trees: dict[str, dict[str, Entry]] = field(default_factory=dict[str, dict[str, Entry]])
     commits: dict[str, dict[str, Any]] = field(default_factory=dict[str, dict[str, Any]])
@@ -134,7 +130,6 @@ class FakeGitHub:
 
     @classmethod
     def from_repo(cls, root: Path, base: str) -> FakeGitHub:
-        """Seeds the base commit from the real repository, before any sandbox tampering."""
         gh = cls()
         flat: dict[str, Entry] = {}
         for record in git_raw(root, "ls-tree", "-r", "-z", "--full-tree", base).decode().split("\0"):
@@ -250,8 +245,6 @@ class FakeGitHub:
 
 
 class LocalSandbox:
-    """exec runs the command locally; download reads the local file."""
-
     id = "sbx-local"
 
     def __init__(self) -> None:
@@ -326,7 +319,6 @@ BINARY = bytes([0, 1, 2, 0xFF, 0xFE, 13, 10, 13, 0]) + secrets.token_bytes(4000)
 
 
 def edit_working_tree(root: Path) -> None:
-    """The agent's edits: every case a naive archive transfer gets wrong."""
     write(root, "a.txt", "hello\r\nworld\r\n")
     write(root, "crlf.txt", "one\r\ntwo\r\n")
     write(root, "ignored/keep.txt", "kept\n")
@@ -352,7 +344,6 @@ class TestPublish:
         result = await harness.run()
         assert isinstance(result, Published), result
 
-        # The sandbox's repository is untouched, and only one command ran there, as root.
         assert git(root, "status", "--porcelain", "-z") == status_before
         assert sha1((root / ".git/index").read_bytes()) == index_before
         assert len(harness.sandbox.execs) == 1
@@ -467,7 +458,6 @@ class TestPublish:
 class TestSubvertedSandbox:
     @staticmethod
     def forged_base(root: Path, base: str) -> tuple[str, str]:
-        """Builds a parentless commit whose tree is the base tree plus an `evil` symlink."""
         env = {**GIT_ENV, "GIT_INDEX_FILE": str(root / ".git/forged-index")}
         git_raw(root, "read-tree", base, env=env)
         link = git_raw(root, "hash-object", "-w", "--stdin", env=env, input=b"/etc/passwd").decode().strip()

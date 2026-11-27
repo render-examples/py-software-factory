@@ -7,7 +7,6 @@ from factory.format.text import BODY_MAX_CHARS, code_span, fit_around, sanitize,
 
 
 def triage_questions_body(questions: Sequence[str]) -> str:
-    """The comment body when triage asks the maintainer questions."""
     numbered = "\n".join(f"{i}. {sanitize_inline(q)}" for i, q in enumerate(questions, start=1))
     return fit_around(
         "The factory needs more detail before it can write a specification:\n\n",
@@ -18,7 +17,6 @@ def triage_questions_body(questions: Sequence[str]) -> str:
 
 
 def triage_decline_body(rationale: str) -> str:
-    """The comment body when triage declines the issue."""
     return fit_around(
         "The factory declined this issue:\n\n",
         sanitize(rationale),

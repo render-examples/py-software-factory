@@ -1,5 +1,3 @@
-"""HTTP for the GitHub REST API: auth headers, JSON, timeouts, and retries on 5xx and rate limits."""
-
 from __future__ import annotations
 
 import asyncio
@@ -18,14 +16,12 @@ from factory.github.auth import github_api_url
 from factory.github.types import GitHubError
 
 TokenProvider = Callable[[], Awaitable[str]]
-"""Resolves the current token. Installation tokens expire, so it's called per request (github_token caches)."""
 
 Sleep = Callable[[float], Awaitable[None]]
 Query = Mapping[str, str | int | bool | None]
 
 _DEFAULT_ACCEPT = "application/vnd.github+json"
 _MAX_WAIT_SECONDS = 60.0
-"""A rate limit that asks for a longer wait fails instead: sleeping in a task is wasted compute."""
 _SAFE_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE"})
 _NEXT_LINK = re.compile(r'<([^>]+)>\s*;\s*rel="next"')
 
@@ -41,7 +37,6 @@ class GitHubHttp:
         max_attempts: int = 4,
         sleep: Sleep | None = None,
     ) -> None:
-        """`max_attempts` counts the first. `transport` and `sleep` are test seams."""
         self.api_url = (api_url or github_api_url()).rstrip("/")
         self.transport = transport
         self._token = token
@@ -50,7 +45,6 @@ class GitHubHttp:
         self._sleep = sleep or asyncio.sleep
         self._client: httpx.AsyncClient | None = None
         self._last_token = ""
-        """Kept only to scrub it from error messages."""
 
     async def aclose(self) -> None:
         if self._client is not None:
@@ -67,19 +61,15 @@ class GitHubHttp:
         query: Query | None = None,
         idempotent: bool = False,
     ) -> Any:
-        """JSON request; None for 204. POST and PATCH are retried only when `idempotent`: the caller knows
-        whether repeating the write is harmless."""
         response = await self.send(method, path, body=body, accept=accept, query=query, idempotent=idempotent)
         if response.status_code == 204 or not response.content:
             return None
         return response.json()
 
     async def text(self, method: str, path: str, *, accept: str | None = None, query: Query | None = None) -> str:
-        """Raw text response, for media types such as application/vnd.github.diff."""
         return (await self.send(method, path, accept=accept, query=query)).text
 
     async def paginate(self, path: str, *, query: Query | None = None, max_pages: int = 30) -> list[Any]:
-        """Every page of a list endpoint, in API order, following Link rel="next"."""
         items: list[Any] = []
         next_url: str | None = path
         page_query: Query | None = {"per_page": 100, **(query or {})}
@@ -90,7 +80,6 @@ class GitHubHttp:
             response = await self.send("GET", next_url, query=page_query)
             items.extend(response.json())
             next_url = _next_link(response.headers.get("link"))
-            # The next link carries the query.
             page_query = None
             page += 1
         return items
@@ -153,7 +142,6 @@ class GitHubHttp:
 
     def _url(self, path: str, query: Query | None) -> str:
         if re.match(r"^https?://", path):
-            # Only follow links back to the same API: a token must never leave for another host.
             if not path.startswith(f"{self.api_url}/"):
                 raise ValueError(f"Refusing to send a GitHub token to {urlsplit(path).netloc}")
             url = httpx.URL(path)
@@ -173,8 +161,6 @@ def _query_value(value: str | int | bool) -> str:
 
 
 def _retry_delay(response: httpx.Response, body: str, attempt: int, now: float | None = None) -> float | None:
-    """Seconds to wait before retrying, or None when the response isn't worth retrying. Retries 5xx, 429, and
-    rate-limited 403s (retry-after, x-ratelimit-remaining: 0, or a secondary rate limit message)."""
     now = time.time() if now is None else now
     status = response.status_code
     headers = response.headers
@@ -194,7 +180,6 @@ def _retry_delay(response: httpx.Response, body: str, attempt: int, now: float |
         except ValueError:
             return None
     elif secondary:
-        # GitHub asks for at least a minute after a secondary limit that names no wait.
         wait = _MAX_WAIT_SECONDS
     else:
         wait = _backoff(attempt)
@@ -204,7 +189,6 @@ def _retry_delay(response: httpx.Response, body: str, attempt: int, now: float |
 
 
 def _parse_retry_after(value: str | None, now: float) -> float | None:
-    """retry-after is delta-seconds or an HTTP date."""
     if not value:
         return None
     try:
@@ -218,7 +202,7 @@ def _parse_retry_after(value: str | None, now: float) -> float | None:
 
 
 def _backoff(attempt: int) -> float:
-    return 0.5 * 2 ** (attempt - 1) + random.random() * 0.25  # noqa: S311 - jitter, not security
+    return 0.5 * 2 ** (attempt - 1) + random.random() * 0.25  # noqa: S311
 
 
 def _next_link(header: str | None) -> str | None:
@@ -232,5 +216,4 @@ def _next_link(header: str | None) -> str | None:
 
 
 def encode_path(path: str) -> str:
-    """Encodes each segment of a git ref or file path, so `release/2.x` stays two segments."""
     return "/".join(quote(segment, safe="") for segment in path.split("/"))

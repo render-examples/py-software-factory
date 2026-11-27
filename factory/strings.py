@@ -1,5 +1,3 @@
-"""Small pure string-formatting helpers shared across dependency boundaries."""
-
 from __future__ import annotations
 
 import json

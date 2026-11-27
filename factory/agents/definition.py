@@ -21,7 +21,6 @@ class AgentDefinition:
     max_turns: int
     model: str
     writes: bool = False
-    """Whether the agent may change files. Read-only agents also get a narrower shell."""
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -42,8 +41,6 @@ class AgentDefinition:
         model: Model | str | None = None,
         extra: Sequence[AbstractCapability[AgentDeps]] = (),
     ) -> Agent[AgentDeps, BaseModel]:
-        """Build a fresh agent so tests and runs can inject a model, and runs can add capabilities such as spend
-        limits that need services the definition can't hold."""
         return Agent(
             model or self.model,
             output_type=ToolOutput(

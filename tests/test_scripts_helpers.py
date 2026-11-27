@@ -161,8 +161,6 @@ def test_doctor_database_section_adds_local_url_hint(monkeypatch: pytest.MonkeyP
 
 
 class GroupKeys:
-    """Env groups by name, holding keys; never values."""
-
     def __init__(self, keys: dict[str, set[str]]) -> None:
         self.keys = keys
 

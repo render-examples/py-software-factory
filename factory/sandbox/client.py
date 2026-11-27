@@ -1,5 +1,3 @@
-"""Access to Render Sandboxes and the factory's concrete sandbox adapter."""
-
 from __future__ import annotations
 
 import asyncio
@@ -60,8 +58,6 @@ class SnapshotApi(Protocol):
 
 
 class SandboxApi(Protocol):
-    """The render 1.8.0 surface used here. Fakes implement this protocol directly."""
-
     @property
     def snapshots(self) -> SnapshotApi: ...
 
@@ -94,12 +90,8 @@ Clock = Callable[[], float]
 
 @dataclass(frozen=True)
 class SandboxTimings:
-    """Runtime budgets."""
-
     control_timeout_seconds: float = 30
-    """Timeout for short streaming control commands."""
     streaming_exec_max_seconds: float = 40
-    """Longer commands use detached execution to stay below the SDK's 45-second read timeout."""
     retry_base_seconds: float = 2.0
     retry_max_seconds: float = 10.0
     retry_attempts: int = 5
@@ -122,8 +114,6 @@ def _error_status(error: BaseException) -> int | None:
 
 
 class SandboxClient:
-    """Adds bounded exec, retries, and polling to the SDK."""
-
     def __init__(
         self,
         api: SandboxApi,
@@ -148,7 +138,6 @@ class SandboxClient:
         retry_statuses: frozenset[int] = frozenset({429, 503}),
         attempts: int | None = None,
     ) -> _T:
-        """Make one API call and retry only explicit transient HTTP statuses."""
         limit = attempts or self.timings.retry_attempts
         if limit < 1:
             raise ValueError("attempts must be positive")
@@ -338,8 +327,6 @@ class _DetachedExecution:
 
 
 class RenderSandbox:
-    """Concrete implementation of :class:`factory.sandbox.types.Sandbox`."""
-
     def __init__(self, sandbox_id: str, client: SandboxClient) -> None:
         self._id = sandbox_id
         self.client = client
@@ -387,7 +374,6 @@ class RenderSandbox:
         return _DetachedExecution(self.id, directory, timeout_seconds)
 
     async def _poll_detached(self, execution: _DetachedExecution) -> ExecResult | None:
-        """One request: nothing while the command runs; once it has exited, its status and both output tails."""
         self._check_execution(execution)
         directory = execution.directory
         probe = await self.client.exec(
@@ -441,7 +427,6 @@ _shared_client: SandboxClient | None = None
 
 
 def sandbox_client() -> SandboxClient:
-    """Build the process-wide client lazily from Render's standard environment."""
     global _shared_client
     if _shared_client is None:
         from render import RenderAsync

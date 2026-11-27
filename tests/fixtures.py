@@ -1,6 +1,3 @@
-"""Shared test data. Unit tests never read the operator's deployment settings; keep security-sensitive expectations
-explicit here."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,7 +21,6 @@ REPOSITORY_CASES = (
     RepositoryCase("acme/api", "develop", ("npm run check",)),
     RepositoryCase("other/worker", "release/candidate", ("npm run lint", "npm run typecheck", "npm test")),
 )
-"""Distinct repositories prove runs use the selected repository's branch and command list."""
 
 TEST_CONFIG = FactoryConfig(
     repos={

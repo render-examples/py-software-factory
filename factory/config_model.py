@@ -1,5 +1,3 @@
-"""Types for `factory_config.py`. Constructing a `FactoryConfig` validates it, so a bad config fails at import."""
-
 from __future__ import annotations
 
 import re
@@ -13,7 +11,6 @@ from factory.strings import json_string
 
 Permission = Literal["triage", "write", "maintain", "admin"]
 
-# A lowercase hostname with at least one dot, as the Sandbox egress rules take it; `*.` only as the leftmost label.
 _EGRESS_HOST = re.compile(r"^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 
@@ -23,15 +20,9 @@ class _Config(BaseModel):
 
 class RepoConfig(_Config):
     base_branch: str = Field(min_length=1)
-    """Branch that specs are implemented against and snapshots are built from."""
     install: str | None = None
-    """Installs dependencies in the sandbox. Runs after credentials are removed."""
     verify: tuple[str, ...]
-    """Commands that must pass before a PR opens and that PR Reviewer runs."""
     egress: tuple[str, ...] | Literal["allow-all"] = ()
-    """HTTPS hosts this repository's sandboxes may reach beyond github.com: package
-    registries and anything `install` or `verify` downloads. Exact hostnames; `*.` only as the leftmost label.
-    Every other destination is blocked. "allow-all" lifts the restriction for this repository."""
 
 
 class Labels(_Config):
@@ -43,50 +34,29 @@ class Labels(_Config):
 
 class Limits(_Config):
     repair_rounds: int = Field(default=2, ge=0)
-    """Fix rounds after a failed verify in Spec-to-PR."""
     max_changed_files: int = Field(default=200, ge=1)
-    """Publishing refuses a change with more files than this."""
     max_file_bytes: int = Field(default=1_000_000, ge=1)
-    """Publishing refuses any changed file larger than this."""
 
 
 class SandboxSettings(_Config):
     timeout_seconds: int = Field(default=4 * 60 * 60, ge=60)
-    """Render terminates a sandbox after this, even if the task that opened it crashed."""
 
 
 class SpendSettings(_Config):
-    """Dollar ceilings on model spend, counted in py-factory-db so every Workflow instance enforces the same budget.
-
-    A budget stops the next model request once it is spent; the request that crosses it completes. Leave one unset
-    to disable it. Provider-side limits still apply on top.
-    """
-
     agent_run_usd: Decimal | None = Field(default=None, gt=0)
-    """One agent run, such as one Implementer attempt."""
     repo_day_usd: Decimal | None = Field(default=None, gt=0)
-    """Every agent working on one repository, per UTC day."""
     day_usd: Decimal | None = Field(default=None, gt=0)
-    """The whole deployment, per UTC day."""
 
 
 class TelemetrySettings(_Config):
     include_content: bool = False
-    """Send prompts, model output, tool arguments, and tool results to Logfire.
-
-    They hold issue text and repository contents, which then leave your Render workspace. Off by default: traces
-    still carry timing, models, tokens, cost, tool names, and outcomes.
-    """
 
 
 class FactoryConfig(_Config):
     repos: dict[str, RepoConfig]
-    """Repositories the factory acts on, keyed by "owner/name". Webhooks from any other repository are ignored."""
     labels: Labels = Labels()
     command_prefix: str = "/factory"
-    """Prefix for comment commands, such as `/factory cancel`."""
     minimum_permission: Permission = "write"
-    """GitHub permission the triggering actor needs on the repository."""
     limits: Limits = Limits()
     sandbox: SandboxSettings = SandboxSettings()
     spend: SpendSettings = SpendSettings()
@@ -99,7 +69,6 @@ class FactoryConfig(_Config):
 
 
 def assert_egress_hosts(hosts: tuple[str, ...] | list[str], where: str) -> None:
-    """Raises naming the first host that isn't a bare hostname: no scheme, port, path, or uppercase."""
     for host in hosts:
         if not _EGRESS_HOST.fullmatch(host):
             raise ValueError(
@@ -109,7 +78,6 @@ def assert_egress_hosts(hosts: tuple[str, ...] | list[str], where: str) -> None:
 
 
 def validate_config(config: FactoryConfig) -> None:
-    """Checks what the field types can't."""
     for full_name, repo in config.repos.items():
         where = f"factory_config.py repos[{json_string(full_name)}]"
         if not is_valid_repo_name(full_name):

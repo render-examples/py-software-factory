@@ -1,5 +1,3 @@
-"""GitHub App authentication: the App JWT and repository-scoped installation tokens."""
-
 from __future__ import annotations
 
 import base64
@@ -21,7 +19,6 @@ _token_cache: dict[str, tuple[str, float]] = {}
 
 
 def _now() -> float:
-    """Test seam."""
     return time.time()
 
 
@@ -45,15 +42,12 @@ def app_credentials() -> AppCredentials:
 
 
 def normalize_private_key(value: str) -> str:
-    """Accepts the PEM as-is, with escaped newlines, or base64-encoded: env vars make real newlines awkward and
-    every deployment tool escapes them differently."""
     if "BEGIN" in value:
         return value.replace("\\n", "\n")
     return base64.b64decode(value).decode()
 
 
 def app_jwt(credentials: AppCredentials | None = None) -> str:
-    """A JWT signed with the App's private key, valid for nine minutes (backdated one for clock skew)."""
     credentials = credentials or app_credentials()
     now = int(_now())
     return jwt.encode({"iat": now - 60, "exp": now + 540, "iss": credentials.app_id}, credentials.private_key, "RS256")
@@ -71,9 +65,6 @@ async def github_token(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> str:
-    """Mints an installation token restricted to one repository (`repo` is the name without the owner), cached per
-    (installation, repository, permissions) until five minutes before it expires. Omit `permissions` for every
-    permission the installation has."""
     key = _cache_key(installation_id, repo, permissions)
     cached = _token_cache.get(key)
     if cached and cached[1] - _REFRESH_MARGIN_SECONDS > _now():
@@ -107,7 +98,6 @@ async def github_token(
 
 
 def reset_token_cache() -> None:
-    """Test seam."""
     _token_cache.clear()
 
 

@@ -1,6 +1,3 @@
-"""Publishing a sandbox's working tree as one commit, through the Git Data API, with a token that never enters the
-sandbox."""
-
 from __future__ import annotations
 
 import re
@@ -24,22 +21,16 @@ from factory.identifiers import is_safe_branch
 from factory.sandbox import APP_DIR, REPO_DIR, Sandbox, shq
 
 COLLECT_CHANGES_SCRIPT = f"{APP_DIR}/collect-changes.sh"
-"""`bash collect-changes.sh <repo_dir> <base_sha> <out_file> <max_changed_files> <max_file_bytes>`; see the
-script."""
 
 DEFAULT_IDENTITY = GitIdentity(name="software-factory[bot]", email="software-factory[bot]@users.noreply.github.com")
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _COLLECT_TIMEOUT_SECONDS = 10 * 60
 _PER_FILE_OVERHEAD = 4096 + 300
-"""Slack per changed file in the output file for its diff record, size line, and blob header (paths cap at
-4096)."""
 
 
 @dataclass(frozen=True)
 class PublishPaths:
-    """Test seams: where the script and checkout live, and where the output goes."""
-
     script_path: str = COLLECT_CHANGES_SCRIPT
     repo_dir: str = REPO_DIR
     out_path: str | None = None
@@ -50,19 +41,13 @@ class PublishInput:
     sandbox: Sandbox
     repo: RepoContext
     base_sha: str
-    """The commit the run started from; the branch's only parent. From trusted input, never model output."""
     branch: str
     message: str
     author: GitIdentity = DEFAULT_IDENTITY
-    """Author and committer. Pass a fixed `date` to make retries produce the same commit."""
     git: GitDataClient | None = None
     limits: PublishLimits | None = None
-    """Defaults to the configured limits."""
     owned_commits: Collection[str] = field(default_factory=tuple[str, ...])
-    """Commits an earlier attempt of this run created: the branch may be moved off them as well as off
-    base_sha."""
     assert_owned: Callable[[], Awaitable[None]] | None = None
-    """Raises once the run no longer owns its thread. Called immediately before the branch moves."""
 
 
 @dataclass(frozen=True)
@@ -73,11 +58,6 @@ class Published:
 
 
 async def publish(publish_input: PublishInput, paths: PublishPaths | None = None) -> Published | Refused:
-    """Publishes the sandbox's working tree as one commit on `refs/heads/<branch>`.
-
-    Returns a refusal when the change breaks a publishing rule, and raises on any verification mismatch, before a
-    ref moves.
-    """
     paths = paths or PublishPaths()
     if not _SHA.fullmatch(publish_input.base_sha):
         raise ValueError(f"Invalid base SHA: {publish_input.base_sha}")
@@ -147,8 +127,7 @@ async def _write(git: GitDataClient, publish_input: PublishInput, checked: Check
 
 
 async def _collect(sandbox: Sandbox, base_sha: str, limits: PublishLimits, paths: PublishPaths) -> bytes:
-    """Runs collect-changes.sh and downloads its one output file, checking its size before and after."""
-    out_path = paths.out_path or f"/tmp/software-factory-changes-{uuid.uuid4()}"  # noqa: S108 - inside the sandbox
+    out_path = paths.out_path or f"/tmp/software-factory-changes-{uuid.uuid4()}"  # noqa: S108
     command = " ".join(
         [
             "bash",
@@ -178,8 +157,6 @@ async def _collect(sandbox: Sandbox, base_sha: str, limits: PublishLimits, paths
 
 
 def _tree_entries(files: list[ChangedFile]) -> list[TreeEntry]:
-    """Deletions go first: GitHub applies entries in order, so turning a file into a directory (or back) needs the
-    old entry gone before the new one lands."""
     deletions = sorted((f for f in files if f.sha is None), key=lambda f: f.path.encode())
     writes = sorted((f for f in files if f.sha is not None), key=lambda f: f.path.encode())
     entries = [TreeEntry(path=f.path, mode="100644", sha=None) for f in deletions]
@@ -194,8 +171,6 @@ def _tree_entries(files: list[ChangedFile]) -> list[TreeEntry]:
 
 
 async def _move_branch(git: GitDataClient, branch: str, commit_sha: str, base: set[str], owned: set[str]) -> None:
-    """Points the branch at `commit_sha`: creates it, fast-forwards it from the base, or moves it off a commit this
-    run created. Any other target belongs to someone else and is left alone."""
     for _ in range(3):
         current = await git.get_ref(branch)
         if current == commit_sha:

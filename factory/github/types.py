@@ -5,14 +5,12 @@ from typing import Final, Literal
 
 Permission = Literal["none", "read", "triage", "write", "maintain", "admin"]
 PERMISSIONS: Final[tuple[Permission, ...]] = ("none", "read", "triage", "write", "maintain", "admin")
-"""Repository permission levels, lowest first. Custom roles map to the base level they extend."""
 
 
 @dataclass(frozen=True)
 class Actor:
     login: str
     type: str
-    """ "User", "Bot", "Organization", ... """
 
 
 @dataclass(frozen=True)
@@ -24,7 +22,6 @@ class Issue:
     labels: tuple[str, ...]
     author: Actor
     is_pull: bool
-    """True when the number is a pull request (the issues API serves both)."""
     html_url: str
 
 
@@ -67,14 +64,11 @@ class PullFile:
     deletions: int
     changes: int
     patch: str | None = None
-    """Absent for binary files and very large diffs."""
     previous_filename: str | None = None
 
 
 @dataclass(frozen=True)
 class InlineComment:
-    """One inline comment, as GitHub's create-review API takes it."""
-
     path: str
     line: int
     body: str

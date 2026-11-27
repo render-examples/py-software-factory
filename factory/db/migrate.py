@@ -1,5 +1,3 @@
-"""Schema migrations: numbered SQL files applied in order, once, under an advisory lock."""
-
 from __future__ import annotations
 
 import re
@@ -17,7 +15,6 @@ def migration_names() -> list[str]:
 
 
 async def migrate(db: Db) -> list[str]:
-    """Applies pending migrations and returns their names. Safe to run from several processes at once."""
     async with db.transaction() as tx:
         await tx.query("select pg_advisory_xact_lock(hashtext('software-factory:migrate'))")
         await tx.query(
@@ -26,7 +23,6 @@ async def migrate(db: Db) -> list[str]:
         )
         pending = await pending_migrations(tx)
         for name in pending:
-            # Packaged migration files are trusted SQL, not input.
             await tx.script(files("factory.db").joinpath("migrations", name).read_text(encoding="utf-8"))
             await tx.query("insert into schema_migrations (name) values ($1)", (name,))
         return pending

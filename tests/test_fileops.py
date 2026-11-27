@@ -1,5 +1,3 @@
-"""sandbox/fileops.py, run the way the sandbox runs it: one JSON request in, one JSON response out."""
-
 from __future__ import annotations
 
 import json

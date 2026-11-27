@@ -1,5 +1,3 @@
-"""Agent messages for implementation and repair."""
-
 from __future__ import annotations
 
 from factory.config import RepoContext

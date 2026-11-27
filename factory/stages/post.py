@@ -1,5 +1,3 @@
-"""Find and post idempotent COMMENT-only PR reviews."""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence

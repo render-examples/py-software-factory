@@ -12,8 +12,6 @@ pytest_plugins = ["tests.db"]
 
 @pytest.fixture(autouse=True)
 def _test_config(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
-    """Replace the deployment config, not the functions that read it: repository resolution and permission checks
-    stay real."""
     monkeypatch.setattr(factory.config, "_config", TEST_CONFIG)
 
 

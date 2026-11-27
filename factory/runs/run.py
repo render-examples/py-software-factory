@@ -1,5 +1,3 @@
-"""Running GitHub work as a run on its issue's or PR's thread."""
-
 from __future__ import annotations
 
 import asyncio
@@ -43,16 +41,13 @@ _AGENT_STOPS: dict[AgentErrorCode, str] = {
     "invalid_submission": "submitted an invalid result",
     "output_invalid": "submitted an invalid result",
 }
-"""Ways an agent stops that come from the model or its limits. Any other agent error is the platform's and fails
-the run."""
 
 _SUPERSEDED = ("superseded", "a newer run took over.")
 _STALE_REPLY = ("stale_reply", "the issue moved on before this reply could resume it.")
 FINAL_SYNC_ATTEMPTS = 3
 
 
-class _Superseded(Exception):
-    """Raised once a newer trace owns the thread."""
+class _Superseded(Exception): ...
 
 
 @dataclass(frozen=True)
@@ -60,14 +55,10 @@ class RunOptions:
     repo: RepoContext
     thread: GitHubThread
     task: str
-    """The registered task name."""
     title: str
-    """The run's name in the status comment, such as "PR Reviewer"."""
     actor: str
     runs: Callable[[], RunControl]
-    """Built only when a displaced trace or unconfirmed cleanup needs stopping."""
     mode: RunMode = "replace"
-    """Root runs replace another trace; children only continue their own; replies resume a waiting trace."""
     reply_to: str | None = None
     gh: GitHubClient | None = None
     db: Db | None = None
@@ -198,8 +189,6 @@ class ThreadRun:
         )
 
     async def fail(self, error: Exception) -> TaskResult[Any]:
-        """A superseded run ends quietly. An expected failure or an agent stop is shown and the run succeeds.
-        Anything else is shown without its message, which can hold secrets or repository output, and re-raised."""
         if isinstance(error, _Superseded) or not await self._still_current():
             return await self._record("cancelled", *_SUPERSEDED)
         if isinstance(error, ExpectedFailure):
@@ -276,12 +265,6 @@ class ThreadRun:
 async def with_run(
     identity: RunIdentity, opts: RunOptions, work: Callable[[ThreadRun], Awaitable[Outcome[D]]]
 ) -> TaskResult[D]:
-    """Runs `work` as a run on its thread.
-
-    It checks the actor's current permission before anything else, so an unauthorized trigger displaces nothing;
-    starts on the thread, stopping the trace it displaces; keeps the status view current; and records how the run
-    ended.
-    """
     gh = opts.gh or github_for(opts.repo)
     db = opts.db or workflows_db()
     run = ThreadRun(identity, opts, gh, db)

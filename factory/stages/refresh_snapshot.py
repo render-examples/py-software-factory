@@ -1,5 +1,3 @@
-"""Snapshot refresh as a plain dependency-injected stage."""
-
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable

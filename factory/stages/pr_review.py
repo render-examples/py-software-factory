@@ -1,5 +1,3 @@
-"""Pull-request review stage; always posts a COMMENT review."""
-
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
@@ -77,7 +75,6 @@ async def pr_review_stage(run: Run, task_input: PrReviewInput, deps: PrReviewDep
     finally:
         await sandbox.close()
 
-    # Recheck immediately before the durable write. The trigger commit remains the only allowed target.
     if (await gh.get_pull(task_input.pr)).head_sha != task_input.head_sha:
         raise head_moved()
     await run.report_progress("posting the review")

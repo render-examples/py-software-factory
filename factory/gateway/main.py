@@ -1,5 +1,3 @@
-"""Gateway entry point: `python -m factory.gateway.main`. Binds 0.0.0.0:$PORT."""
-
 from __future__ import annotations
 
 import json
@@ -24,7 +22,6 @@ def build() -> Any:
     webhook_secret = require_env("GITHUB_WEBHOOK_SECRET")
     workflow_slug = require_env("RENDER_WORKFLOW_SLUG")
     db = create_db(require_env("DATABASE_URL"), GATEWAY_POOL_SIZE)
-    # Reads RENDER_API_KEY.
     render = RenderAsync()
 
     async def start_run(run: RunName, task_input: dict[str, Any], idempotency_key: str) -> str:
@@ -53,7 +50,7 @@ def build() -> Any:
 
 def main() -> None:
     port = int(os.environ.get("PORT", "3000"))
-    uvicorn.run(build(), host="0.0.0.0", port=port)  # noqa: S104 - Render routes to 0.0.0.0:$PORT
+    uvicorn.run(build(), host="0.0.0.0", port=port)  # noqa: S104
 
 
 if __name__ == "__main__":

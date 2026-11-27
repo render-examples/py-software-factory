@@ -1,5 +1,3 @@
-"""Tables derived from the event log, updated in the transaction that appends each event."""
-
 from __future__ import annotations
 
 import re
@@ -29,9 +27,7 @@ class Projection(Protocol):
     def key(self) -> Sequence[LiteralString]: ...
 
     @property
-    def operational(self) -> Sequence[LiteralString]:
-        """Columns only the projection holds; a rebuild keeps them."""
-        ...
+    def operational(self) -> Sequence[LiteralString]: ...
 
     async def apply(self, tx: Tx, event: LogEvent) -> None: ...
 
@@ -143,14 +139,12 @@ _IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
 def _quoted(name: LiteralString) -> LiteralString:
-    """A projection's own table or column name, quoted. Names are code constants; this guards against a typo."""
     if not _IDENTIFIER.fullmatch(name):
         raise ValueError(f"not a plain SQL identifier: {name!r}")
     return f'"{name}"'
 
 
 async def rebuild(db: Db, projections: Sequence[Projection] = PROJECTIONS) -> int:
-    """Replays the whole log into the projections, keeping their operational columns. Returns the event count."""
     async with db.transaction() as tx:
         await tx.query("lock table events in share mode")
         for projection in projections:

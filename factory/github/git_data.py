@@ -1,5 +1,3 @@
-"""Git Data API calls for one repository. Every call uses a contents:write token that stays on the host."""
-
 from __future__ import annotations
 
 import base64
@@ -26,7 +24,6 @@ class TreeEntry:
     path: str
     mode: FileMode
     sha: str | None
-    """None deletes the path from the base tree."""
 
     def to_json(self) -> dict[str, Any]:
         return {"path": self.path, "mode": self.mode, "type": "blob", "sha": self.sha}
@@ -37,7 +34,6 @@ class GitIdentity:
     name: str
     email: str
     date: str | None = None
-    """ISO 8601. GitHub uses the current time when omitted."""
 
     def to_json(self) -> dict[str, str]:
         out = {"name": self.name, "email": self.email}
@@ -63,8 +59,6 @@ class GitDataClient:
         await self._http.aclose()
 
     async def _request(self, method: str, path: str, body: Any = None) -> Any:
-        # Blobs, trees, and commits are content-addressed and ref moves are compare-and-set, so every call is safe
-        # to retry.
         return await self._http.json(method, f"{self._prefix}{path}", body=body, idempotent=True)
 
     async def get_commit(self, sha: str) -> GitCommit:
@@ -94,7 +88,6 @@ class GitDataClient:
         return commit
 
     async def create_blob(self, content: bytes) -> str:
-        """Returns the blob's SHA as GitHub computed it."""
         body = {"content": base64.b64encode(content).decode(), "encoding": "base64"}
         return _require_sha((await self._request("POST", "/blobs", body)).get("sha"), "blob")
 
@@ -115,7 +108,6 @@ class GitDataClient:
         return _require_sha((await self._request("POST", "/commits", body)).get("sha"), "commit")
 
     async def get_ref(self, branch: str) -> str | None:
-        """The commit a branch points at, or None when the branch doesn't exist."""
         try:
             result = await self._request("GET", f"/ref/heads/{encode_path(branch)}")
         except GitHubError as error:
@@ -130,11 +122,9 @@ class GitDataClient:
         return _require_sha(get(target, "sha"), "ref target")
 
     async def create_ref(self, branch: str, sha: str) -> None:
-        """Raises GitHubError with status 422 when the branch already exists."""
         await self._request("POST", "/refs", {"ref": f"refs/heads/{branch}", "sha": _require_sha(sha, "commit")})
 
     async def update_ref(self, branch: str, sha: str, *, force: bool = False) -> None:
-        """Without force, GitHub refuses (422) unless the move is a fast-forward."""
         body = {"sha": _require_sha(sha, "commit"), "force": force}
         await self._request("PATCH", f"/refs/heads/{encode_path(branch)}", body)
 

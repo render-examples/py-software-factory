@@ -11,6 +11,5 @@ class PermissionGitHub(Protocol):
 
 
 async def check_permission(gh: PermissionGitHub, actor: str) -> bool:
-    """Whether the actor's live repository permission meets the configured minimum. Called on every run."""
     have = await gh.get_permission(actor)
     return PERMISSIONS.index(have) >= PERMISSIONS.index(get_config().minimum_permission)

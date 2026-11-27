@@ -1,5 +1,3 @@
-"""Thread keys: a channel's unit of conversation, `<channel>:<id>`. GitHub is the first channel."""
-
 from __future__ import annotations
 
 import re
@@ -28,10 +26,8 @@ class GitHubThread:
 
     @property
     def name(self) -> str:
-        """ "issue#12" or "pr#34" """
         return f"{self.kind}#{self.number}"
 
 
 def github_thread(repo: str, thread: GitHubThread) -> ThreadKey:
-    """`github:owner/name#issue-12` or `github:owner/name#pr-34`."""
     return thread_key(f"github:{repo}#{thread.kind}-{thread.number}")

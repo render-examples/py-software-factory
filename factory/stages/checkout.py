@@ -1,5 +1,3 @@
-"""PR checkout validation and merge-base discovery."""
-
 from __future__ import annotations
 
 import re

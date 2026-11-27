@@ -16,8 +16,6 @@ Reply = httpx.Response | Callable[[httpx.Request], httpx.Response] | Exception
 
 
 class FakeGitHub:
-    """Replies in order; the last reply repeats."""
-
     def __init__(self, *replies: Reply) -> None:
         self.replies = list(replies)
         self.requests: list[httpx.Request] = []

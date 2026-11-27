@@ -1,9 +1,3 @@
-"""Logfire for both services: configuration, instrumentation, trace propagation across tasks, and flushing.
-
-Without LOGFIRE_TOKEN nothing is sent. Traces are a view, like the status comment: nothing reads them back to
-decide what a run does. Modules record their own spans with `logfire.span` directly.
-"""
-
 from __future__ import annotations
 
 import os
@@ -34,7 +28,6 @@ _CREDENTIALS = re.compile(
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
     re.DOTALL,
 )
-"""Credential shapes masked in every exported string, on top of Logfire's key-name scrubbing."""
 
 
 def mask_credentials(text: str) -> str:
@@ -52,7 +45,6 @@ def configure(service_name: str) -> None:
         service_name=service_name,
         send_to_logfire="if-token-present",
         console=False,
-        # The gateway is public: never adopt trace context a caller sends. Tasks attach theirs explicitly.
         distributed_tracing=False,
         scrubbing=logfire.ScrubbingOptions(transform_string=_transform),
         code_source=(
@@ -64,8 +56,6 @@ def configure(service_name: str) -> None:
 
 
 def instrument_workflows(*, include_content: bool) -> None:
-    """Agent runs, model requests, and tool calls; GitHub, Render, and Anthropic requests, without headers or bodies,
-    which hold credentials; and py-factory-db queries, without their parameters, which hold event payloads."""
     logfire.instrument_pydantic_ai(include_content=include_content)
     logfire.instrument_httpx()
     logfire.instrument_asyncpg()
@@ -78,7 +68,6 @@ def instrument_gateway(app: FastAPI) -> None:
 
 
 def trace_link() -> str | None:
-    """The Logfire page for the current trace, when LOGFIRE_PROJECT_URL names the project traces go to."""
     project = os.environ.get("LOGFIRE_PROJECT_URL", "").strip().rstrip("/")
     parts = urlsplit(project)
     if parts.scheme != "https" or not parts.netloc or parts.query or parts.fragment:
@@ -91,14 +80,12 @@ def trace_link() -> str | None:
 
 
 def carrier() -> dict[str, str] | None:
-    """The current trace context, to send with a task's input so its run continues this trace."""
     traceparent = logfire.get_context().get("traceparent")
     return {"traceparent": traceparent} if traceparent and TRACEPARENT.fullmatch(traceparent) else None
 
 
 @contextmanager
 def attached(context: Mapping[str, str] | None) -> Generator[None]:
-    """Continue the trace a task's input carries, or start a new one."""
     if context is None:
         yield
         return
@@ -107,6 +94,5 @@ def attached(context: Mapping[str, str] | None) -> Generator[None]:
 
 
 def flush() -> None:
-    """Export what a task recorded before its instance stops. Bounded, and never fails the task."""
     with suppress(Exception):
         logfire.force_flush(timeout_millis=FLUSH_TIMEOUT_MILLIS)

@@ -7,3 +7,4 @@ __pycache__/
 .env.localdev
 tmp/
 .DS_Store
+presentation.md

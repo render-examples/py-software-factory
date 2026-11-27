@@ -1,5 +1,3 @@
-"""Typed sandbox lifecycle failures that stages can translate into outcomes."""
-
 from __future__ import annotations
 
 

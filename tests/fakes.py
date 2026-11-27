@@ -1,5 +1,3 @@
-"""In-memory GitHub and Render fakes for run coordination tests. Assert on their end state, not on call order."""
-
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +15,6 @@ BOT = Actor("factory[bot]", "Bot")
 class FakeGitHub:
     permissions: dict[str, Permission] = field(default_factory=dict[str, Permission])
     comments: dict[int, tuple[int, str]] = field(default_factory=dict[int, tuple[int, str]])
-    """comment id -> (issue number, body)"""
     labels: dict[int, set[str]] = field(default_factory=dict[int, set[str]])
     deleted: list[int] = field(default_factory=list[int])
     removed_labels: list[tuple[int, str]] = field(default_factory=list[tuple[int, str]])
@@ -72,8 +69,6 @@ class FakeGitHub:
 
 @dataclass
 class FakeRuns:
-    """Render task runs and sandboxes. Unknown runs are running."""
-
     statuses: dict[str, str] = field(default_factory=dict[str, str])
     cancelled: list[str] = field(default_factory=list[str])
     terminated: list[str] = field(default_factory=list[str])

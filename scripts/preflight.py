@@ -29,7 +29,6 @@ FREE_PLANS = {"free"}
 
 
 def blueprint_checks(text: str) -> list[Check]:
-    """Check security- and contract-bearing Blueprint structure."""
     try:
         parsed: object = yaml.safe_load(text)
     except yaml.YAMLError as error:

@@ -7,13 +7,9 @@ from factory.format.text import bullets, code_span, fit_around, sanitize, saniti
 from factory.schemas import Spec
 
 _SPEC_BODY_MAX_CHARS = 32_000
-"""The rendered spec comment's budget: the caller's marker carries the spec again as JSON, up to
-SPEC_MAX_JSON_CHARS."""
 
 
 def render_spec_sections(spec: Spec) -> str:
-    """The spec's sections as Markdown, with no heading or instructions: for the spec comment and the implementer's
-    message."""
     sections = [f"**{sanitize_inline(spec.title)}**", sanitize(spec.summary)]
 
     def section(heading: str, body: str) -> None:
@@ -36,7 +32,6 @@ def render_spec_sections(spec: Spec) -> str:
 
 
 def acceptance_checklist(spec: Spec) -> str:
-    """The acceptance criteria as a Markdown task list."""
     return "\n".join(
         f"- [ ] **{sanitize_inline(c.id)}**: {sanitize_inline(c.text)} _({c.verification})_"
         for c in spec.acceptance_criteria
@@ -50,7 +45,6 @@ def render_spec(
     warnings: Sequence[str] = (),
     change_summary: str | None = None,
 ) -> str:
-    """The spec comment's visible body. The caller appends the hidden marker that carries the spec as JSON."""
     approve = code_span(get_config().labels.spec_approved)
     suffix = f" v{version}" if version else ""
     head = f"## Specification{suffix}\n\n"

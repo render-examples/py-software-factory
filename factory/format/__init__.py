@@ -1,5 +1,3 @@
-"""Pass model text through here before writing it to GitHub."""
-
 from factory.format.pull_request import VerifyResult, pull_request_body, pull_request_title, verification_table
 from factory.format.review import ReviewPayload, render_review
 from factory.format.spec import acceptance_checklist, render_spec, render_spec_sections
