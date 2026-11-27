@@ -48,7 +48,7 @@ async def sync_status(
         "exists (select 1 from runs where trace_id = t.trace_id and state = 'running') as working, "
         "r.run_id, r.task, r.title, r.state, r.summary, coalesce(r.links, '[]'::jsonb) as links "
         "from threads t join runs r on r.run_id in (t.run_id, t.trace_id) "
-        "where t.thread = %s "
+        "where t.thread = $1 "
         "order by (r.run_id = t.run_id and r.state = 'running') desc, (r.run_id = t.trace_id) desc "
         "limit 1",
         (key,),
@@ -56,7 +56,7 @@ async def sync_status(
     if not rows:
         return None
     row = rows[0]
-    body = status_body(_view(row), stream_path(repo, thread))
+    body = status_body(_view(row))
     if body == shown:
         return body
     comment_id = int(row["comment_id"]) if row["comment_id"] is not None else None
@@ -74,19 +74,14 @@ async def sync_status(
 async def show_rejection(db: Db, gh: StatusGitHub, repo: str, thread: GitHubThread, view: StatusView) -> None:
     """Comments on a rejected trigger only when the thread has no other runs, so strangers can't spam a busy one."""
     rows = await db.query(
-        "select not exists (select 1 from runs where thread = %s and run_id <> %s) as first",
+        "select not exists (select 1 from runs where thread = $1 and run_id <> $2) as first",
         (github_thread(repo, thread), view.run_id),
     )
     if rows and rows[0]["first"]:
         await gh.create_comment(thread.number, status_body(view))
 
 
-def stream_path(repo: str, thread: GitHubThread) -> str:
-    """The gateway path that streams the thread's events to holders of the events reader token."""
-    return f"/threads/github/{repo}/{thread.kind}/{thread.number}/stream"
-
-
-def status_body(view: StatusView, stream: str | None = None) -> str:
+def status_body(view: StatusView) -> str:
     detail = f": {view.summary}" if view.summary else ""
     line = {
         "running": f"**{view.title}** is running (run `{view.run_id}`){detail}",
@@ -98,11 +93,8 @@ def status_body(view: StatusView, stream: str | None = None) -> str:
     parts = [line]
     if view.links:
         parts += ["", *(f"- [{link.label}]({link.url})" for link in view.links)]
-    footer = [f"run `{view.run_id}`"] if view.state != "running" else []
-    if stream:
-        footer.append(f"events: `{stream}`")
-    if footer:
-        parts += ["", f"<sub>{' · '.join(footer)}</sub>"]
+    if view.state != "running":
+        parts += ["", f"<sub>run `{view.run_id}`</sub>"]
     marker = StatusMarker(
         run_id=view.run_id, trace_id=view.trace_id, stage=view.task, title=view.title, state=view.state
     )
@@ -138,8 +130,8 @@ async def _save_comment(
 ) -> None:
     """Records the comment only if no concurrent sync recorded one first; the loser deletes its duplicate."""
     saved = await db.query(
-        "update threads set status_comment_id = %s where thread = %s "
-        "and status_comment_id is not distinct from %s::bigint returning thread",
+        "update threads set status_comment_id = $1 where thread = $2 "
+        "and status_comment_id is not distinct from $3::bigint returning thread",
         (created, thread, replaced),
     )
     if saved:
@@ -148,7 +140,7 @@ async def _save_comment(
         await gh.delete_comment(created)
     except Exception as error:
         warn("could not delete a duplicate status comment", thread=thread, comment_id=created, error=str(error))
-    rows = await db.query("select status_comment_id from threads where thread = %s", (thread,))
+    rows = await db.query("select status_comment_id from threads where thread = $1", (thread,))
     winner = rows[0]["status_comment_id"] if rows else None
     if winner is not None:
         await gh.update_comment(int(winner), body)

@@ -39,6 +39,7 @@ D = TypeVar("D")
 _AGENT_STOPS: dict[AgentErrorCode, str] = {
     "max_turns": "ran out of turns",
     "timeout": "timed out",
+    "spend_limit": "reached its spend limit",
     "invalid_submission": "submitted an invalid result",
     "output_invalid": "submitted an invalid result",
 }

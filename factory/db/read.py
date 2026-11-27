@@ -42,8 +42,8 @@ def to_event(row: Row) -> LogEvent:
 
 async def read_stream(db: Queryable, stream: str, after_version: int, limit: int = 500) -> list[LogEvent]:
     rows = await db.query(
-        f"select {EVENT_COLUMNS} from events where stream = %s and stream_version > %s "
-        "order by stream_version limit %s",
+        f"select {EVENT_COLUMNS} from events where stream = $1 and stream_version > $2 "
+        "order by stream_version limit $3",
         (stream, after_version, limit),
     )
     return [to_event(row) for row in rows]

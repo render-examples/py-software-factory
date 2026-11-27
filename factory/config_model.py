@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -54,6 +55,21 @@ class SandboxSettings(_Config):
     """Render terminates a sandbox after this, even if the task that opened it crashed."""
 
 
+class SpendSettings(_Config):
+    """Dollar ceilings on model spend, counted in factory-db so every Workflow instance enforces the same budget.
+
+    A budget stops the next model request once it is spent; the request that crosses it completes. Leave one unset
+    to disable it. Provider-side limits still apply on top.
+    """
+
+    agent_run_usd: Decimal | None = Field(default=None, gt=0)
+    """One agent run, such as one Implementer attempt."""
+    repo_day_usd: Decimal | None = Field(default=None, gt=0)
+    """Every agent working on one repository, per UTC day."""
+    day_usd: Decimal | None = Field(default=None, gt=0)
+    """The whole deployment, per UTC day."""
+
+
 class TelemetrySettings(_Config):
     include_content: bool = False
     """Send prompts, model output, tool arguments, and tool results to Logfire.
@@ -73,6 +89,7 @@ class FactoryConfig(_Config):
     """GitHub permission the triggering actor needs on the repository."""
     limits: Limits = Limits()
     sandbox: SandboxSettings = SandboxSettings()
+    spend: SpendSettings = SpendSettings()
     telemetry: TelemetrySettings = TelemetrySettings()
 
     @model_validator(mode="after")

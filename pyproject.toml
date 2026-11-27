@@ -17,7 +17,7 @@ dependencies = [
     "pyjwt>=2.10",
     "render==1.8.0",
     "uvicorn>=0.54",
-    "psycopg[binary,pool]>=3.3",
+    "asyncpg>=0.30",
 ]
 
 [project.scripts]
@@ -30,6 +30,7 @@ db-rebuild = "scripts.db_rebuild:main"
 
 [dependency-groups]
 dev = [
+    "asyncpg-stubs>=0.32.0",
     "pyright==1.1.414",
     "pytest>=9.2",
     "pytest-asyncio>=1.5",

@@ -1,47 +1,75 @@
-"""Postgres connections: a lazily opened pool, plain queries, and transactions."""
+"""Postgres on asyncpg: a lazily opened pool, plain queries, transactions, and migration scripts.
+
+The same pool backs Pydantic AI Harness's spend store, which takes an asyncpg pool.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import json
+import ssl
 import weakref
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, LiteralString, Protocol
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from psycopg import AsyncConnection, sql
-from psycopg.rows import DictRow, dict_row
-from psycopg_pool import AsyncConnectionPool
+import asyncpg
 
 from factory.config import require_env
 
-Query = LiteralString | sql.SQL | sql.Composed
-Params = Sequence[object] | Mapping[str, object] | None
+Query = LiteralString
+Params = Sequence[object]
 Row = dict[str, Any]
 
 CONNECT_TIMEOUT_SECONDS = 10
 
 
 class Queryable(Protocol):
-    async def query(self, query: Query, params: Params = None) -> list[Row]: ...
+    async def query(self, query: Query, params: Params = ()) -> list[Row]: ...
 
 
 class Tx(Queryable, Protocol):
     """A connection inside an open transaction."""
 
+    async def script(self, statements: str) -> None:
+        """Runs trusted, parameterless SQL that may hold several statements, such as a migration file."""
+        ...
+
 
 class Db(Queryable, Protocol):
     def transaction(self) -> AbstractAsyncContextManager[Tx]: ...
+    async def pool(self) -> asyncpg.Pool:
+        """The open pool, for libraries that take an asyncpg pool."""
+        ...
+
     async def aclose(self) -> None: ...
 
 
 class _Connection:
-    def __init__(self, connection: AsyncConnection[DictRow]) -> None:
+    def __init__(self, connection: asyncpg.pool.PoolConnectionProxy) -> None:
         self._connection = connection
 
-    async def query(self, query: Query, params: Params = None) -> list[Row]:
-        async with self._connection.cursor() as cursor:
-            await cursor.execute(query, params)
-            return await cursor.fetchall() if cursor.description is not None else []
+    async def query(self, query: Query, params: Params = ()) -> list[Row]:
+        return [dict(row) for row in await self._connection.fetch(query, *params)]
+
+    async def script(self, statements: str) -> None:
+        await self._connection.execute(statements)
+
+
+async def _json_codecs(connection: asyncpg.Connection) -> None:
+    for name in ("json", "jsonb"):
+        await connection.set_type_codec(name, encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
+
+
+def connect_options(url: str) -> tuple[str, ssl.SSLContext | None]:
+    """libpq's `sslrootcert=system` (verify against the system trust store) as an asyncpg TLS context."""
+    parts = urlsplit(url)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    if ("sslrootcert", "system") not in query:
+        return url, None
+    kept = [(key, value) for key, value in query if key not in {"sslrootcert", "sslmode"}]
+    return urlunsplit(parts._replace(query=urlencode(kept))), ssl.create_default_context()
 
 
 OnOpen = Callable[[Db], Awaitable[None]]
@@ -52,29 +80,25 @@ class PoolDb:
 
     def __init__(self, url: str, max_size: int, *, on_open: OnOpen | None = None) -> None:
         self._url = url
+        self._max_size = max_size
         self._on_open = on_open
-        self._pool = AsyncConnectionPool(
-            url,
-            min_size=1,
-            max_size=max_size,
-            open=False,
-            timeout=CONNECT_TIMEOUT_SECONDS,
-            connection_class=AsyncConnection[DictRow],
-            kwargs={"row_factory": dict_row, "autocommit": True},
-        )
+        self._pool: asyncpg.Pool | None = None
         self._lock = asyncio.Lock()
         self._ready = False
-        self._opened = False
 
-    async def query(self, query: Query, params: Params = None) -> list[Row]:
-        await self._ensure_open()
-        return await self._query(query, params)
+    async def query(self, query: Query, params: Params = ()) -> list[Row]:
+        return await self._query(await self.pool(), query, params)
 
     def transaction(self) -> AbstractAsyncContextManager[Tx]:
         return self._transaction(ensure=True)
 
+    async def pool(self) -> asyncpg.Pool:
+        await self._ensure_open()
+        assert self._pool is not None
+        return self._pool
+
     async def aclose(self) -> None:
-        if self._opened:
+        if self._pool is not None:
             await self._pool.close()
 
     async def _ensure_open(self) -> None:
@@ -83,24 +107,31 @@ class PoolDb:
         async with self._lock:
             if self._ready:
                 return
-            if not self._opened:
-                probe = await AsyncConnection.connect(self._url, connect_timeout=CONNECT_TIMEOUT_SECONDS)
-                await probe.close()
-                await self._pool.open()
-                self._opened = True
+            if self._pool is None:
+                dsn, context = connect_options(self._url)
+                self._pool = await asyncpg.create_pool(
+                    dsn,
+                    min_size=1,
+                    max_size=self._max_size,
+                    init=_json_codecs,
+                    timeout=CONNECT_TIMEOUT_SECONDS,
+                    ssl=context,
+                )
             if self._on_open is not None:
                 await self._on_open(_Opened(self))
             self._ready = True
 
-    async def _query(self, query: Query, params: Params) -> list[Row]:
-        async with self._pool.connection() as connection:
+    @staticmethod
+    async def _query(pool: asyncpg.Pool, query: Query, params: Params) -> list[Row]:
+        async with pool.acquire() as connection:
             return await _Connection(connection).query(query, params)
 
     @asynccontextmanager
     async def _transaction(self, *, ensure: bool) -> AsyncGenerator[Tx]:
         if ensure:
             await self._ensure_open()
-        async with self._pool.connection() as connection, connection.transaction():
+        assert self._pool is not None
+        async with self._pool.acquire() as connection, connection.transaction():
             yield _Connection(connection)
 
 
@@ -110,11 +141,16 @@ class _Opened:
     def __init__(self, db: PoolDb) -> None:
         self._db = db
 
-    async def query(self, query: Query, params: Params = None) -> list[Row]:
-        return await self._db._query(query, params)
+    async def query(self, query: Query, params: Params = ()) -> list[Row]:
+        assert self._db._pool is not None
+        return await self._db._query(self._db._pool, query, params)
 
     def transaction(self) -> AbstractAsyncContextManager[Tx]:
         return self._db._transaction(ensure=False)
+
+    async def pool(self) -> asyncpg.Pool:
+        assert self._db._pool is not None
+        return self._db._pool
 
     async def aclose(self) -> None:
         await self._db.aclose()

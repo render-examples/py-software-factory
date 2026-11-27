@@ -1,6 +1,5 @@
 """Real-Postgres fixtures. Tests that use them are skipped unless TEST_DATABASE_URL names a server they may create
-databases on, such as `postgresql:///postgres`. They must run one at a time: an open transaction anywhere on the
-server holds back every thread reader."""
+databases on, such as `postgresql:///postgres`."""
 
 from __future__ import annotations
 
@@ -8,17 +7,31 @@ import asyncio
 import os
 import uuid
 from collections.abc import AsyncIterator, Generator, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from urllib.parse import urlsplit, urlunsplit
 
-import psycopg
+import asyncpg
 import pytest
-from psycopg import sql
-from psycopg.conninfo import make_conninfo
 
 from factory.db import PROJECTIONS, Db, create_db, migrate
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "").strip()
 SKIP_REASON = "set TEST_DATABASE_URL (for example postgresql:///postgres) to run Postgres tests"
+
+
+async def _execute(statement: str) -> None:
+    connection = await asyncpg.connect(TEST_DATABASE_URL)
+    try:
+        await connection.execute(statement)
+    finally:
+        await connection.close()
+
+
+def _admin(statement: str) -> None:
+    """On its own thread and loop, so sync fixtures and async tests can both create databases."""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        executor.submit(asyncio.run, _execute(statement)).result()
 
 
 @contextmanager
@@ -27,13 +40,11 @@ def temporary_database() -> Generator[str]:
     if not TEST_DATABASE_URL:
         pytest.skip(SKIP_REASON)
     name = f"sf_test_{uuid.uuid4().hex}"
-    with psycopg.connect(TEST_DATABASE_URL, autocommit=True) as admin:
-        admin.execute(sql.SQL("create database {}").format(sql.Identifier(name)))
+    _admin(f'create database "{name}"')
     try:
-        yield make_conninfo(TEST_DATABASE_URL, dbname=name)
+        yield urlunsplit(urlsplit(TEST_DATABASE_URL)._replace(path=f"/{name}"))
     finally:
-        with psycopg.connect(TEST_DATABASE_URL, autocommit=True) as admin:
-            admin.execute(sql.SQL("drop database {} with (force)").format(sql.Identifier(name)))
+        _admin(f'drop database "{name}" with (force)')
 
 
 async def _migrate(url: str) -> None:
@@ -56,8 +67,7 @@ def database_url() -> Iterator[str]:
 async def db(database_url: str) -> AsyncIterator[Db]:
     """A pool on the module's database, emptied before each test."""
     pool = create_db(database_url, 5)
-    tables = sql.SQL(", ").join(sql.Identifier(t) for t in ("events", *(p.table for p in PROJECTIONS)))
-    await pool.query(sql.SQL("truncate {}").format(tables))
+    await pool.query(f"truncate events, {', '.join(projection.table for projection in PROJECTIONS)}")
     try:
         yield pool
     finally:

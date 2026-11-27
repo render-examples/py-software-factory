@@ -21,7 +21,7 @@ sandbox.
 
 ## State
 
-Postgres (`factory-db`) holds an append-only event log. Every fact is an event on a stream such as `run:<id>`,
+Postgres (`factory-db`, reached through asyncpg) holds an append-only event log and the spend counters. Every fact is an event on a stream such as `run:<id>`,
 `thread:<key>` or `delivery:github:<id>`. Tables derived from the log (`runs`, `threads`) are updated in the same
 transaction as each append, and `db-rebuild` can replay them from the log.
 
@@ -48,8 +48,10 @@ and one of two tool sets (`factory/agents/tools.py`):
 - **Writing** (Implementer): the same plus `edit_file` and `write_file`, and an unrestricted `Shell`.
 
 All agents also carry Pydantic AI Harness capabilities for long runs: `ClearToolResults` keeps old tool output from
-filling the context window, `DetectLoops` notices repeated calls that make no progress, and `RepairToolArguments`
-fixes malformed tool-call JSON.
+filling the context window, `DetectLoops` notices repeated calls that make no progress, `RepairToolArguments`
+fixes malformed tool-call JSON, and `SpendLimits` stops an agent once a run, repository, or deployment budget is
+spent. Spend is counted in `factory-db`, so every Workflow instance enforces the same budgets (see
+[Spend budgets](configuration.md#spend-budgets)).
 
 The agent loop runs in the Workflow task, so the model key never leaves Workflow compute and the sandbox has no route
 to the model provider. Everything the agent does runs in the sandbox as the unprivileged `factory` user:

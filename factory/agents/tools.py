@@ -41,6 +41,8 @@ TOOL_RETRIES = 3
 @dataclass(frozen=True)
 class AgentDeps:
     files: SandboxFiles
+    repo: str
+    """"owner/name": the repository budgets are counted per."""
 
 
 class TextEdit(BaseModel):

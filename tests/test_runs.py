@@ -10,6 +10,7 @@ from factory.agents import AgentError
 from factory.config import require_repo
 from factory.db import Db, read_stream
 from factory.events.catalog import RunMode
+from factory.github import IssueComment
 from factory.runs import (
     WORKING_LABEL,
     ExpectedFailure,
@@ -76,11 +77,11 @@ async def hold_thread(db: Db, trace: str, run: str | None = None, *, sandbox: st
     )
     assert started is not None
     if sandbox:
-        await db.query("update runs set sandbox_id = %s where run_id = %s", (sandbox, run or trace))
+        await db.query("update runs set sandbox_id = $1 where run_id = $2", (sandbox, run or trace))
 
 
 async def run_row(db: Db, run_id: str) -> dict[str, Any]:
-    rows = await db.query("select * from runs where run_id = %s", (run_id,))
+    rows = await db.query("select * from runs where run_id = $1", (run_id,))
     assert rows, f"no run {run_id}"
     return rows[0]
 
@@ -201,7 +202,7 @@ async def test_concurrent_root_starts_leave_exactly_one_owner(db: Db) -> None:
     started = await asyncio.gather(start_on_thread(db, starting("trace-a")), start_on_thread(db, starting("trace-b")))
     assert all(s is not None for s in started)
     displaced = sorted(str(s.displaced) for s in started if s is not None)
-    owner = (await db.query("select trace_id from threads where thread = %s", (KEY,)))[0]["trace_id"]
+    owner = (await db.query("select trace_id from threads where thread = $1", (KEY,)))[0]["trace_id"]
     loser = "trace-a" if owner == "trace-b" else "trace-b"
     assert displaced == ["None", loser]
 
@@ -254,13 +255,23 @@ async def test_the_status_view_follows_the_run_and_the_working_label(db: Db) -> 
 
 
 async def test_concurrent_status_syncs_leave_one_comment(db: Db) -> None:
-    gh = FakeGitHub()
+    class RacingGitHub(FakeGitHub):
+        """Both syncs read the thread before either creates its comment, so both create one."""
+
+        both_read = asyncio.Barrier(2)
+
+        async def create_comment(self, number: int, body: str) -> IssueComment:
+            await self.both_read.wait()
+            return await super().create_comment(number, body)
+
+    gh = RacingGitHub()
     await hold_thread(db, "trace-a")
     await asyncio.gather(sync_status(db, gh, REPO, ISSUE), sync_status(db, gh, REPO, ISSUE))
+    assert gh.created == 2
     assert len(gh.bodies(7)) == 1
-    assert gh.deleted
+    assert len(gh.deleted) == 1
     [comment_id] = gh.comments
-    saved = await db.query("select status_comment_id from threads where thread = %s", (KEY,))
+    saved = await db.query("select status_comment_id from threads where thread = $1", (KEY,))
     assert saved[0]["status_comment_id"] == comment_id
 
 

@@ -72,6 +72,6 @@ pass, and, with tracing on, a delivery appears in Logfire as one trace.
   the trigger label to run again.
 - The gateway's database credential can write to the event log, so a compromised gateway could forge run events
   (see [docs/architecture.md](docs/architecture.md#security-boundaries)).
-- Spend is capped per agent run by its request limit and at the model provider; there is no cross-run spend ledger
-  or durable conversation carry-over.
+- Spend budgets stop the next model request once a budget is spent, so concurrent runs can overshoot by about one
+  request each; keep a provider-side limit as well. There is no durable conversation carry-over.
 - The first run after a deploy that changes a `sandbox/` script rebuilds that repository's snapshot inline.

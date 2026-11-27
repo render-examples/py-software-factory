@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-AgentErrorCode = Literal["timeout", "max_turns", "invalid_submission", "output_invalid", "agent_error"]
+AgentErrorCode = Literal["timeout", "max_turns", "spend_limit", "invalid_submission", "output_invalid", "agent_error"]
 
 
 class AgentError(Exception):

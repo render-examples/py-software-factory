@@ -4,6 +4,8 @@ from pydantic import BaseModel, ValidationError
 from pydantic_ai import UsageLimits
 from pydantic_ai.exceptions import RunTimedOut, UnexpectedModelBehavior, UsageLimitExceeded
 from pydantic_ai.models import Model
+from pydantic_ai_harness import SpendLimits
+from pydantic_ai_harness.spend import SpendLimitExceeded
 
 from factory.agents.definition import AgentDefinition
 from factory.agents.errors import AgentError
@@ -25,20 +27,23 @@ async def run_agent(
     sandbox: Sandbox,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     model: Model | str | None = None,
+    spend: SpendLimits[AgentDeps] | None = None,
 ) -> BaseModel:
     """Run one registered agent against a sandbox and validate its output a second time on the host."""
     definition = get_agent(agent) if isinstance(agent, str) else agent
     if not message:
         raise ValueError("agent message must not be empty")
     try:
-        result = await definition.build(model=model).run(
+        result = await definition.build(model=model, extra=(spend,) if spend else ()).run(
             message,
-            deps=AgentDeps(SandboxFiles(sandbox, REPO_DIR)),
+            deps=AgentDeps(SandboxFiles(sandbox, REPO_DIR), repo=event_ids.repo),
             usage_limits=UsageLimits(request_limit=definition.max_turns),
             timeout=timeout_seconds,
             workspace=SandboxWorkspace(sandbox),
         )
         output = definition.output_type.model_validate(result.output.model_dump(mode="json", by_alias=True))
+    except SpendLimitExceeded as error:
+        raise AgentError(definition.id, "spend_limit", str(error)) from error
     except UsageLimitExceeded as error:
         raise AgentError(definition.id, "max_turns", str(error)) from error
     except RunTimedOut as error:

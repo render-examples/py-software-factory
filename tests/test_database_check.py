@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 
 import pytest
 
 import scripts.database as database
+from factory.db.pool import connect_options
 from scripts.common import print_checks
 from scripts.database import check_database, database_checks, url_secrets
 
@@ -122,3 +124,20 @@ def test_database_checks_skip_without_url() -> None:
     assert skip.name == "database"
     assert not skip.required
     assert "docs/configuration.md#database" in skip.detail
+
+
+def test_system_trust_store_urls_become_a_verifying_tls_context() -> None:
+    dsn, context = connect_options(
+        "postgresql://u:p@dpg-abc.oregon-postgres.render.com/factory?sslmode=verify-full&sslrootcert=system"
+    )
+    assert dsn == "postgresql://u:p@dpg-abc.oregon-postgres.render.com/factory"
+    assert context is not None
+    assert context.check_hostname
+    assert context.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_other_urls_pass_through_to_asyncpg() -> None:
+    internal = "postgresql://u:p@dpg-abc-a/factory"
+    assert connect_options(internal) == (internal, None)
+    external = "postgresql://u:p@host/factory?sslmode=require"
+    assert connect_options(external) == (external, None)

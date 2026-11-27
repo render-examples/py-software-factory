@@ -43,8 +43,9 @@ Pydantic AI model contract.
 ## Database
 
 `factory-db` is a Render Postgres 17 database declared in `render.yaml` (`basic-256mb`, in `oregon` with the
-services). It holds the append-only event log (`events`) and the tables derived from it (`runs`, `threads`).
-Both services apply pending migrations themselves: Workflows on its first task, the gateway at startup.
+services). It holds the append-only event log (`events`), the tables derived from it (`runs`, `threads`), and the
+spend counters. Both services apply pending migrations themselves: Workflows on its first task, the gateway at
+startup.
 
 **Two URLs.** Render services in the same region use the internal URL, which is what the Blueprint provides. The
 Blueprint sets `ipAllowList: []`, which blocks every connection from outside the workspace. To run `doctor`,
@@ -55,7 +56,8 @@ external URL with certificate verification:
 postgresql://USER:PASSWORD@EXTERNAL-HOST/DATABASE?sslmode=verify-full&sslrootcert=system
 ```
 
-The libpq bundled with psycopg-binary supports `sslrootcert=system`. Remove your IP afterwards.
+The factory connects with asyncpg, and turns `sslrootcert=system` into a TLS context that verifies the server's
+certificate and hostname against the system trust store. Remove your IP afterwards.
 
 **The link step.** A Blueprint can give `DATABASE_URL` to the gateway but not to a Workflow service: every sync fails
 with `depends on non-existent DB`. After the Blueprint has been applied, copy the gateway's value into the
@@ -81,6 +83,28 @@ above.
 **Connection budget.** The gateway's pool holds up to 10 connections, and each concurrent Workflows task process up
 to 3. Keep the total within the plan's connection limit; move to a larger plan, or lower the Workflows pool, before
 raising Workflows concurrency.
+
+## Spend budgets
+
+Pydantic AI Harness's `SpendLimits` prices every model response and refuses the next request once a budget is spent.
+Budgets are set in `factory_config.py`; leave one unset to disable it:
+
+```python
+CONFIG = FactoryConfig(
+    ...,
+    spend=SpendSettings(agent_run_usd=Decimal(20), repo_day_usd=Decimal(100), day_usd=Decimal(250)),
+)
+```
+
+- `agent_run_usd`: one agent run, such as one Implementer attempt or one repair round.
+- `repo_day_usd`: every agent working on one repository, per UTC day.
+- `day_usd`: the whole deployment, per UTC day.
+
+Counters live in `factory-db` (`spend_counters` and `spend_dedup`, which the store creates on first use), on the
+same asyncpg pool as the event log, so every Workflow instance enforces one budget. A run stopped by a budget fails
+with "the … agent reached its spend limit." The request that crosses a ceiling completes, and concurrent runs can
+each pass the check before either records its spend, so a budget can be exceeded by about one request per
+concurrent run. Keep a spend limit at the model provider too.
 
 ## Observability (Logfire)
 

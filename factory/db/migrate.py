@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import re
 from importlib.resources import files
-from typing import LiteralString, cast
-
-from psycopg import sql
 
 from factory.db.pool import Db, Queryable
 
@@ -29,10 +26,9 @@ async def migrate(db: Db) -> list[str]:
         )
         pending = await pending_migrations(tx)
         for name in pending:
-            text = files("factory.db").joinpath("migrations", name).read_text(encoding="utf-8")
             # Packaged migration files are trusted SQL, not input.
-            await tx.query(sql.SQL(cast(LiteralString, text)))
-            await tx.query("insert into schema_migrations (name) values (%s)", (name,))
+            await tx.script(files("factory.db").joinpath("migrations", name).read_text(encoding="utf-8"))
+            await tx.query("insert into schema_migrations (name) values ($1)", (name,))
         return pending
 
 

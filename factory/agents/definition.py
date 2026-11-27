@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, ToolOutput
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.models import Model
 
 from factory.agents.tools import TOOL_RETRIES, AgentDeps, capabilities, file_tools
@@ -34,8 +36,14 @@ class AgentDefinition:
             raise ValueError(f"agent {self.id}: prompt file {self.prompt_path} is empty")
         return text
 
-    def build(self, *, model: Model | str | None = None) -> Agent[AgentDeps, BaseModel]:
-        """Build a fresh agent so tests and runs can inject a model safely."""
+    def build(
+        self,
+        *,
+        model: Model | str | None = None,
+        extra: Sequence[AbstractCapability[AgentDeps]] = (),
+    ) -> Agent[AgentDeps, BaseModel]:
+        """Build a fresh agent so tests and runs can inject a model, and runs can add capabilities such as spend
+        limits that need services the definition can't hold."""
         return Agent(
             model or self.model,
             output_type=ToolOutput(
@@ -46,7 +54,7 @@ class AgentDefinition:
             system_prompt=self.prompt,
             deps_type=AgentDeps,
             toolsets=[file_tools(writes=self.writes)],
-            capabilities=capabilities(writes=self.writes),
+            capabilities=[*capabilities(writes=self.writes), *extra],
             name=self.id,
             retries=TOOL_RETRIES,
         )

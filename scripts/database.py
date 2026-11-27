@@ -134,8 +134,8 @@ def _describe(error: BaseException, secrets: list[str]) -> str:
 
 @contextmanager
 def _quiet_driver_logs() -> Generator[None]:
-    # psycopg's pool logs connection failures (host and user included) through logging's stderr fallback.
-    logger = logging.getLogger("psycopg")
+    # asyncpg's pool can log connection failures (host and user included) through logging's stderr fallback.
+    logger = logging.getLogger("asyncpg")
     previous = logger.level
     logger.setLevel(logging.CRITICAL + 1)
     try:

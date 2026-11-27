@@ -220,7 +220,7 @@ async def test_a_rejected_trigger_leaves_its_label(db: Db) -> None:
 async def hold_issue(db: Db, trace: str, *, sandbox: str | None = None) -> None:
     await start_on_thread(db, StartingRun(ISSUE_KEY, trace, trace, "autopilot", "Autopilot", "maintainer", "replace"))
     if sandbox:
-        await db.query("update runs set sandbox_id = %s where run_id = %s", (sandbox, trace))
+        await db.query("update runs set sandbox_id = $1 where run_id = $2", (sandbox, trace))
 
 
 async def cancel(db: Db, gh: FakeGitHub, runs: FakeRuns, run_id: str) -> dict[str, Any]:

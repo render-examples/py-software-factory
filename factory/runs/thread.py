@@ -52,9 +52,9 @@ async def start_on_thread(db: Db, run: StartingRun) -> Started | None:
         try:
             async with db.transaction() as tx:
                 rows = await tx.query(
-                    "select (select trace_id from threads where thread = %s) as trace_id, "
-                    "(select coalesce(max(stream_version), 0) from events where stream = %s) as version, "
-                    "(select waiting from runs where run_id = %s) as reply_waiting",
+                    "select (select trace_id from threads where thread = $1) as trace_id, "
+                    "(select coalesce(max(stream_version), 0) from events where stream = $2) as version, "
+                    "(select waiting from runs where run_id = $3) as reply_waiting",
                     (run.thread, stream, run.reply_to or ""),
                 )
                 latest: str | None = rows[0]["trace_id"]
@@ -80,8 +80,8 @@ async def start_on_thread(db: Db, run: StartingRun) -> Started | None:
 
 async def is_current(db: Queryable, thread: ThreadKey, trace_id: str, run_id: str) -> bool:
     rows = await db.query(
-        "select 1 from threads t join runs r on r.run_id = %s "
-        "where t.thread = %s and t.trace_id = %s and r.state = 'running'",
+        "select 1 from threads t join runs r on r.run_id = $1 "
+        "where t.thread = $2 and t.trace_id = $3 and r.state = 'running'",
         (run_id, thread, trace_id),
     )
     return bool(rows)
@@ -98,7 +98,7 @@ async def stop_trace(db: Db, runs: RunControl, trace_id: str, *, by: str, summar
     recorded, and records `run.stopped` for each. Render kills a cancelled run without running its cleanup, so this
     is the only place its sandboxes get terminated and its end gets recorded."""
     rows = await db.query(
-        "select run_id, thread, sandbox_id from runs where trace_id = %s and state = 'running'", (trace_id,)
+        "select run_id, thread, sandbox_id from runs where trace_id = $1 and state = 'running'", (trace_id,)
     )
     if not rows:
         return Stopped((), ())
@@ -122,7 +122,7 @@ async def stop_trace(db: Db, runs: RunControl, trace_id: str, *, by: str, summar
 async def retry_cleanup(db: Db, control: Callable[[], RunControl], thread: ThreadKey, by: str) -> Cleanup:
     """Retries stopping what earlier runs on the thread couldn't confirm, and records each success."""
     rows = await db.query(
-        "select run_id, cleanup_pending from runs where thread = %s and cleanup_pending is not null", (thread,)
+        "select run_id, cleanup_pending from runs where thread = $1 and cleanup_pending is not null", (thread,)
     )
     confirmed: list[str] = []
     unconfirmed: list[str] = []

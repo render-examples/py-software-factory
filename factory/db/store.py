@@ -7,8 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, Generic
 
-from psycopg.errors import UniqueViolation
-from psycopg.types.json import Jsonb
+from asyncpg import UniqueViolationError
 
 from factory.db.pool import Tx
 from factory.db.projections import project
@@ -49,10 +48,9 @@ def encode_payload(event: NewEvent[Any]) -> dict[str, Any]:
 
 _INSERT: Final = (
     "insert into events (stream, stream_version, thread, type, version, source, idempotency_key, payload) "
-    "select %(stream)s::text, coalesce(max(stream_version), 0) + 1, %(thread)s::text, %(type)s::text, "
-    "%(version)s::int, %(source)s::text, %(key)s::text, %(payload)s::jsonb "
-    "from events where stream = %(stream)s::text "
-    "having %(expected)s::int is null or coalesce(max(stream_version), 0) = %(expected)s::int "
+    "select $1::text, coalesce(max(stream_version), 0) + 1, $2::text, $3::text, $4::int, $5::text, $6::text, "
+    "$7::jsonb from events where stream = $1::text "
+    "having $8::int is null or coalesce(max(stream_version), 0) = $8::int "
     "on conflict (idempotency_key) do nothing "
     f"returning {EVENT_COLUMNS}"
 )
@@ -65,23 +63,23 @@ async def append(tx: Tx, event: NewEvent[Any], *, expected_version: int | None =
     `expected_version`; the transaction is then aborted and must be retried from the start.
     """
     payload = encode_payload(event)
-    params = {
-        "stream": event.stream,
-        "thread": event.thread,
-        "type": event.type.type,
-        "version": event.type.version,
-        "source": event.source,
-        "key": event.idempotency_key,
-        "payload": Jsonb(payload),
-        "expected": expected_version,
-    }
+    params = (
+        event.stream,
+        event.thread,
+        event.type.type,
+        event.type.version,
+        event.source,
+        event.idempotency_key,
+        payload,
+        expected_version,
+    )
     try:
         rows = await tx.query(_INSERT, params)
-    except UniqueViolation as error:
+    except UniqueViolationError as error:
         raise VersionConflict(event.stream) from error
     if not rows:
         if event.idempotency_key is not None and await tx.query(
-            "select 1 from events where idempotency_key = %s", (event.idempotency_key,)
+            "select 1 from events where idempotency_key = $1", (event.idempotency_key,)
         ):
             return None
         raise VersionConflict(event.stream)

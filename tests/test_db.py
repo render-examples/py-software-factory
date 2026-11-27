@@ -171,7 +171,7 @@ async def test_rebuild_replays_projections_and_keeps_operational_columns(db: Db)
                 THREAD,
             ),
         )
-    await db.query("update threads set status_comment_id = 42 where thread = %s", (THREAD,))
+    await db.query("update threads set status_comment_id = 42 where thread = $1", (THREAD,))
     before = await db.query("select * from runs")
 
     assert await rebuild(db) == 3

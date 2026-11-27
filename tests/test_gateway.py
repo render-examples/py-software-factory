@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
+import asyncpg
 import httpx
 import pytest
 
@@ -53,10 +54,13 @@ def sign(body: bytes, secret: str = SECRET) -> str:
 class Unreachable:
     """A database that is down."""
 
-    async def query(self, query: Query, params: Params = None) -> list[Row]:
+    async def query(self, query: Query, params: Params = ()) -> list[Row]:
         raise ConnectionError("database is unreachable")
 
     def transaction(self) -> AbstractAsyncContextManager[Tx]:
+        raise ConnectionError("database is unreachable")
+
+    async def pool(self) -> asyncpg.Pool:
         raise ConnectionError("database is unreachable")
 
     async def aclose(self) -> None:
