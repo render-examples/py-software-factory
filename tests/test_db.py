@@ -4,7 +4,9 @@ import asyncio
 import uuid
 from typing import Any
 
+import logfire
 import pytest
+from logfire.testing import CaptureLogfire
 
 from factory.db import (
     Db,
@@ -182,3 +184,11 @@ async def test_rebuild_replays_projections_and_keeps_operational_columns(db: Db)
     assert await db.query("select trace_id, run_id, status_comment_id from threads") == [
         {"trace_id": trace_id, "run_id": run_id, "status_comment_id": 42}
     ]
+
+
+async def test_traced_queries_record_statements_but_never_parameters(db: Db, capfire: CaptureLogfire) -> None:
+    logfire.instrument_asyncpg()
+    await db.query("select $1::text as payload", ("event payload text",))
+    statements = [dict(span.attributes or {}).get("db.statement") for span in capfire.exporter.exported_spans]
+    assert "select $1::text as payload" in statements
+    assert "event payload text" not in repr(capfire.exporter.exported_spans_as_dict())

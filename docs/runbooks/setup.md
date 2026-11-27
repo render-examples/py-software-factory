@@ -81,7 +81,8 @@ groups exactly as described in [configuration.md](../configuration.md). Never ad
 service.
 
 For tracing, create two Logfire write tokens in your Logfire project, one per service, and add them as
-`LOGFIRE_TOKEN` to the `factory-gateway` and `factory-workflows` groups. Decide whether traces include prompts and
+`LOGFIRE_TOKEN` to the `factory-gateway` and `factory-workflows` groups. Add the project's URL as
+`LOGFIRE_PROJECT_URL` to `factory-workflows` so status comments link each run's trace. Decide whether traces include prompts and
 repository content before the first run (see [Observability](../configuration.md#observability-logfire)).
 
 ## 5. Configure repositories

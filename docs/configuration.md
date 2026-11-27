@@ -27,6 +27,8 @@ The gateway intentionally has no GitHub App private key and no model key.
 - `ANTHROPIC_API_KEY`: used by the agent loops, which run in the Workflow task. It never enters a sandbox.
 - `FACTORY_SANDBOX_GROUP_ID`: group for all factory sandboxes and snapshots.
 - `LOGFIRE_TOKEN`: optional Logfire write token, separate from the gateway's.
+- `LOGFIRE_PROJECT_URL`: optional; adds a Logfire trace link to status comments. See
+  [Observability](#observability-logfire).
 - `DATABASE_URL`: written by `setup-render --link-database --apply`. See [Database](#database).
 - `GITHUB_API_URL`: optional GitHub Enterprise Server API base.
 
@@ -136,6 +138,11 @@ credentials or PEM private keys are masked before export.
 Every run span carries `factory.trace_id` and `factory.run_id` (the Render root task run and this task run), and
 `factory.repo` and `factory.thread`. Find a Dashboard task run's trace in Logfire with
 `attributes->>'factory.run_id' = '<trn-…>'`.
+
+Set `LOGFIRE_PROJECT_URL` on `factory-workflows` to the project's URL, such as
+`https://logfire-us.pydantic.dev/acme/factory`, and the GitHub status comment links **Trace in Logfire** for the run
+it shows, while the run is still going. Without it, the comment has no link. Queries to `factory-db` appear as spans
+with their SQL, never their parameters, which hold event payloads.
 
 ## Local files
 

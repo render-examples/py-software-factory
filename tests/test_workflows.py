@@ -13,11 +13,12 @@ from render.workflows.context import TaskRunMetadata
 from factory.config import require_repo
 from factory.db import Db
 from factory.github import GitHubClient, Permission
-from factory.runs import WORKING_LABEL, Outcome, Run, RunIdentity, RunOptions, TaskResult
+from factory.runs import WORKING_LABEL, Outcome, Run, RunIdentity, RunOptions, StatusView, TaskResult, status_body
 from factory.runs.thread import StartingRun, start_on_thread
 from factory.schemas import AutopilotInput, TriageInput
 from factory.schemas.tasks import TraceContext
 from factory.threads import GitHubThread, github_thread
+from factory.tracing import trace_link
 from factory.workflows.app import app
 from factory.workflows.autopilot import AutopilotDeps, ChildTask, autopilot_stage
 from factory.workflows.cancel import run_cancel
@@ -344,3 +345,28 @@ async def test_snapshot_refresh_checks_the_push_actors_current_permission() -> N
             },
             gh=NoPermission(),
         )
+
+
+PROJECT = "https://logfire-us.pydantic.dev/acme/factory"
+VIEW = StatusView("trace-1", "run-1", "triage", "Triage", "running", "reading the issue")
+
+
+def test_the_status_comment_links_the_runs_logfire_trace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOGFIRE_PROJECT_URL", PROJECT + "/")
+    with logfire.span("run"):
+        trace_id = format(trace.get_current_span().get_span_context().trace_id, "032x")
+        body = status_body(VIEW, trace_link())
+    assert f"[Trace in Logfire]({PROJECT}?q=trace_id%3D%27{trace_id}%27)" in body
+
+
+@pytest.mark.parametrize("project", ["", "http://logfire.example/acme/factory", f"{PROJECT}?q=x"])
+def test_no_trace_link_without_an_https_project_url(monkeypatch: pytest.MonkeyPatch, project: str) -> None:
+    monkeypatch.setenv("LOGFIRE_PROJECT_URL", project)
+    with logfire.span("run"):
+        assert trace_link() is None
+    assert "Trace in Logfire" not in status_body(VIEW, None)
+
+
+def test_no_trace_link_outside_a_run_span(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOGFIRE_PROJECT_URL", PROJECT)
+    assert trace_link() is None

@@ -11,9 +11,12 @@ import re
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING
+from urllib.parse import urlencode, urlsplit
 
 import logfire
 from logfire.types import StringValue
+from opentelemetry import trace
+from opentelemetry.trace import format_trace_id
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -61,15 +64,30 @@ def configure(service_name: str) -> None:
 
 
 def instrument_workflows(*, include_content: bool) -> None:
-    """Agent runs, model requests, and tool calls; plus GitHub, Render, and Anthropic requests, without headers or
-    bodies, which hold credentials."""
+    """Agent runs, model requests, and tool calls; GitHub, Render, and Anthropic requests, without headers or bodies,
+    which hold credentials; and factory-db queries, without their parameters, which hold event payloads."""
     logfire.instrument_pydantic_ai(include_content=include_content)
     logfire.instrument_httpx()
+    logfire.instrument_asyncpg()
 
 
 def instrument_gateway(app: FastAPI) -> None:
     logfire.instrument_fastapi(app, excluded_urls=GATEWAY_UNTRACED_URLS)
     logfire.instrument_httpx()
+    logfire.instrument_asyncpg()
+
+
+def trace_link() -> str | None:
+    """The Logfire page for the current trace, when LOGFIRE_PROJECT_URL names the project traces go to."""
+    project = os.environ.get("LOGFIRE_PROJECT_URL", "").strip().rstrip("/")
+    parts = urlsplit(project)
+    if parts.scheme != "https" or not parts.netloc or parts.query or parts.fragment:
+        return None
+    context = trace.get_current_span().get_span_context()
+    if not context.is_valid:
+        return None
+    query = urlencode({"q": f"trace_id='{format_trace_id(context.trace_id)}'"})
+    return f"{project}?{query}"
 
 
 def carrier() -> dict[str, str] | None:

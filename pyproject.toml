@@ -9,7 +9,7 @@ dependencies = [
     "cryptography>=46",
     "fastapi>=0.162",
     "httpx>=0.28",
-    "logfire[fastapi,httpx]>=4.39",
+    "logfire[asyncpg,fastapi,httpx]>=4.39",
     "pydantic>=2.14",
     "pydantic-ai-harness[repair-tool-arguments]==0.68.0",
     "pydantic-ai-slim[anthropic,logfire]==2.68.0",

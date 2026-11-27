@@ -12,6 +12,7 @@ from factory.events import warn
 from factory.github import GitHubError, IssueComment, RunState, StatusMarker, render_marker
 from factory.runs.types import StatusLink
 from factory.threads import GitHubThread, ThreadKey, github_thread
+from factory.tracing import trace_link
 
 WORKING_LABEL = "factory:working"
 """On the issue or PR while any run of its current trace is running."""
@@ -56,7 +57,7 @@ async def sync_status(
     if not rows:
         return None
     row = rows[0]
-    body = status_body(_view(row))
+    body = status_body(_view(row), trace_link())
     if body == shown:
         return body
     comment_id = int(row["comment_id"]) if row["comment_id"] is not None else None
@@ -78,10 +79,11 @@ async def show_rejection(db: Db, gh: StatusGitHub, repo: str, thread: GitHubThre
         (github_thread(repo, thread), view.run_id),
     )
     if rows and rows[0]["first"]:
-        await gh.create_comment(thread.number, status_body(view))
+        await gh.create_comment(thread.number, status_body(view, trace_link()))
 
 
-def status_body(view: StatusView) -> str:
+def status_body(view: StatusView, trace: str | None = None) -> str:
+    """`trace` links the Logfire trace of the run writing the comment, which is the run the comment shows."""
     detail = f": {view.summary}" if view.summary else ""
     line = {
         "running": f"**{view.title}** is running (run `{view.run_id}`){detail}",
@@ -93,6 +95,8 @@ def status_body(view: StatusView) -> str:
     parts = [line]
     if view.links:
         parts += ["", *(f"- [{link.label}]({link.url})" for link in view.links)]
+    if trace:
+        parts += ["", f"[Trace in Logfire]({trace})"]
     if view.state != "running":
         parts += ["", f"<sub>run `{view.run_id}`</sub>"]
     marker = StatusMarker(
