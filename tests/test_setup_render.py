@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import re
-import stat
-from pathlib import Path
-
 import pytest
 
-from scripts.common import parse_env_file
-from scripts.setup_render import ServiceRef, ensure_events_read_token, main
+from scripts.setup_render import ServiceRef, main
 
 DATABASE_URL = "postgresql://factory_user:sup3r-secret@dpg-abc123-a/factory"
 RENDER_ENV = ("RENDER_API_KEY", "RENDER_ADMIN_API_KEY", "RENDER_WORKSPACE_ID")
@@ -113,49 +108,3 @@ def test_link_database_requires_render_credentials(
 def test_apply_requires_link_database(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["--apply"]) == 2
     assert "--link-database" in _output(capsys)
-
-
-def test_setup_generates_events_read_token_without_printing_it(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    env_file = tmp_path / ".env"
-    env_file.write_text("RENDER_WORKSPACE_ID=tea-123\nEVENTS_READ_TOKEN=\nGITHUB_APP_ID=42")
-    env_file.chmod(0o644)
-
-    assert main(["--group-id", "sbg-abc123", "--env-file", str(env_file)]) == 0
-
-    values = parse_env_file(env_file.read_text())
-    token = values["EVENTS_READ_TOKEN"]
-    assert re.fullmatch(r"[0-9a-f]{64}", token)
-    assert values["RENDER_WORKSPACE_ID"] == "tea-123"
-    assert values["GITHUB_APP_ID"] == "42"
-    assert env_file.read_text().count("EVENTS_READ_TOKEN") == 1
-    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
-    output = _output(capsys)
-    assert token not in output
-    assert "Generated EVENTS_READ_TOKEN" in output
-    assert "factory-gateway env group" in output
-
-
-def test_events_read_token_is_kept_when_present(tmp_path: Path) -> None:
-    env_file = tmp_path / ".env"
-    env_file.write_text("EVENTS_READ_TOKEN=existing\n")
-    assert not ensure_events_read_token(env_file)
-    assert env_file.read_text() == "EVENTS_READ_TOKEN=existing\n"
-
-
-def test_events_read_token_creates_or_appends(tmp_path: Path) -> None:
-    created = tmp_path / "new" / ".env"
-    assert ensure_events_read_token(created)
-    assert re.fullmatch(r"EVENTS_READ_TOKEN=[0-9a-f]{64}\n", created.read_text())
-
-    appended = tmp_path / ".env"
-    appended.write_text("PORT=3000")
-    assert ensure_events_read_token(appended)
-    assert set(parse_env_file(appended.read_text())) == {"PORT", "EVENTS_READ_TOKEN"}
-
-
-def test_link_database_does_not_touch_env_file(tmp_path: Path) -> None:
-    env_file = tmp_path / ".env"
-    assert main(["--link-database", "--env-file", str(env_file)], api=_linked_api()) == 0
-    assert not env_file.exists()

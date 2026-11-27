@@ -3,23 +3,25 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, cast
 
+import logfire
 import pytest
+from logfire.testing import CaptureLogfire
+from opentelemetry import trace
 from render import TaskContext
 from render.workflows.context import TaskRunMetadata
 
-from factory.agents.registry import IMPLEMENTER
 from factory.config import require_repo
 from factory.db import Db
 from factory.github import GitHubClient, Permission
 from factory.runs import WORKING_LABEL, Outcome, Run, RunIdentity, RunOptions, TaskResult
 from factory.runs.thread import StartingRun, start_on_thread
 from factory.schemas import AutopilotInput, TriageInput
+from factory.schemas.tasks import TraceContext
 from factory.threads import GitHubThread, github_thread
 from factory.workflows.app import app
 from factory.workflows.autopilot import AutopilotDeps, ChildTask, autopilot_stage
 from factory.workflows.cancel import run_cancel
 from factory.workflows.refresh_snapshot import refresh_snapshot_run
-from factory.workflows.services import effective_placement, model_egress
 from factory.workflows.triage import run_triage
 from tests.fakes import FakeGitHub, FakeRuns
 from tests.fixtures import REPO
@@ -273,11 +275,55 @@ def test_one_app_registers_exactly_six_tasks() -> None:
     )
 
 
-def test_broker_setting_controls_model_placement_and_egress_together() -> None:
-    assert effective_placement(IMPLEMENTER, False) == "in-task"
-    assert model_egress(IMPLEMENTER, False) == ()
-    assert effective_placement(IMPLEMENTER, True) == "in-sandbox"
-    assert model_egress(IMPLEMENTER, True) == ("api.anthropic.com",)
+async def test_autopilot_children_and_the_review_continue_its_trace() -> None:
+    payloads: list[dict[str, Any]] = []
+
+    async def run_child(task: ChildTask, payload: dict[str, Any]) -> dict[str, Any]:
+        payloads.append(payload)
+        return await drafted_then_opened(task, payload)
+
+    started = Started()
+    with logfire.span("autopilot"):
+        trace_id = format(trace.get_current_span().get_span_context().trace_id, "032x")
+        await autopilot(run_child, started)
+    carried = [*payloads, started.calls[0][1]]
+    assert [payload["trace_context"]["traceparent"].split("-")[1] for payload in carried] == [trace_id] * 3
+
+
+async def test_a_task_continues_the_trace_its_input_carries(
+    monkeypatch: pytest.MonkeyPatch, capfire: CaptureLogfire
+) -> None:
+    async def fake_with_run(
+        identity: RunIdentity, options: RunOptions, work: Callable[[Run], Awaitable[Outcome[Any]]]
+    ) -> TaskResult[Any]:
+        del options, work
+        return TaskResult("failed", "agent_stopped", "stopped", identity.trace_id, identity.run_id)
+
+    monkeypatch.setattr("factory.workflows.github_task.with_run", fake_with_run)
+
+    class Context:
+        metadata = TaskRunMetadata(task_run_id="root", root_task_run_id="root", parent_task_run_id=None)
+
+    parent = "00-" + "1" * 32 + "-" + "2" * 16 + "-01"
+    task_input = TriageInput(
+        repo=REPO, installation_id=1, issue=7, actor="maintainer", trace_context=TraceContext(traceparent=parent)
+    )
+    await run_triage(cast(TaskContext, Context()), task_input.model_dump(), gh=cast(GitHubClient, object()))
+
+    [span] = [
+        span
+        for span in capfire.exporter.exported_spans
+        if span.name.startswith("{title}") and (span.attributes or {}).get("logfire.span_type") == "span"
+    ]
+    assert span.context is not None
+    assert span.parent is not None
+    assert (format(span.context.trace_id, "032x"), format(span.parent.span_id, "016x")) == ("1" * 32, "2" * 16)
+    attributes = dict(span.attributes or {})
+    assert (attributes["outcome"], attributes["factory.run_id"], attributes["factory.thread"]) == (
+        "agent_stopped",
+        "root",
+        "issue#7",
+    )
 
 
 async def test_snapshot_refresh_checks_the_push_actors_current_permission() -> None:

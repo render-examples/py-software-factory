@@ -14,10 +14,17 @@ Sha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 ActorLogin = Annotated[str, Field(min_length=1)]
 
 
+class TraceContext(TaskInput):
+    """The W3C trace context of whatever started the task, so its run continues that trace. Telemetry only."""
+
+    traceparent: str = Field(pattern=r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$")
+
+
 class RepoInput(TaskInput):
     repo: str = Field(min_length=3, max_length=200)
     installation_id: PositiveInt
     actor: ActorLogin
+    trace_context: TraceContext | None = None
 
     @field_validator("repo")
     @classmethod

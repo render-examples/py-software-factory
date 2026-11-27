@@ -12,10 +12,10 @@ import uvicorn
 from fastapi import FastAPI
 from render import RenderAsync
 
+from factory import tracing
 from factory.config import RunName, require_env
 from factory.db import create_db, migrate
 from factory.gateway.app import GatewayDeps, create_gateway
-from factory.gateway.hub import EventHub, listen
 
 GATEWAY_POOL_SIZE = 10
 
@@ -23,41 +23,31 @@ GATEWAY_POOL_SIZE = 10
 def build() -> Any:
     webhook_secret = require_env("GITHUB_WEBHOOK_SECRET")
     workflow_slug = require_env("RENDER_WORKFLOW_SLUG")
-    events_read_token = require_env("EVENTS_READ_TOKEN")
-    database_url = require_env("DATABASE_URL")
-    db = create_db(database_url, GATEWAY_POOL_SIZE)
-    hub = EventHub()
-    listener = listen(hub, database_url)
+    db = create_db(require_env("DATABASE_URL"), GATEWAY_POOL_SIZE)
     # Reads RENDER_API_KEY.
     render = RenderAsync()
 
     async def start_run(run: RunName, task_input: dict[str, Any], idempotency_key: str) -> str:
+        context = tracing.carrier()
+        traced = {**task_input, "trace_context": context} if context else task_input
         slug = f"{workflow_slug}/{run}"
-        return (await render.workflows.start_task(slug, [task_input], idempotency_key=idempotency_key)).id
+        return (await render.workflows.start_task(slug, [traced], idempotency_key=idempotency_key)).id
 
-    app = create_gateway(
-        GatewayDeps(
-            start_run=start_run,
-            webhook_secret=webhook_secret,
-            db=db,
-            hub=hub,
-            events_read_token=events_read_token,
-        )
-    )
+    app = create_gateway(GatewayDeps(start_run=start_run, webhook_secret=webhook_secret, db=db))
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         applied = await migrate(db)
         if applied:
             print(json.dumps({"level": "info", "msg": "applied migrations", "migrations": applied}), flush=True)
-        await listener.start()
         try:
             yield
         finally:
-            await listener.stop()
             await db.aclose()
 
     app.router.lifespan_context = lifespan
+    tracing.configure("factory-gateway")
+    tracing.instrument_gateway(app)
     return app
 
 

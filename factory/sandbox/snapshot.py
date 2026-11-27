@@ -1,15 +1,12 @@
-"""Snapshot naming, construction, pruning, and hash-checked runner payloads."""
+"""Snapshot naming, construction, and pruning."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import hashlib
-import io
 import json
 import re
-import uuid
-import zipfile
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -35,6 +32,7 @@ from factory.sandbox.types import (
     RUNNER_HOME,
     RUNNER_PATH,
     RUNNER_TMP,
+    SANDBOX_PYTHON,
     SANDBOX_ROOT,
     SCRATCH_DIR,
     SnapshotManifest,
@@ -49,10 +47,9 @@ STAGING_CREDS: Final = f"{STAGING_DIR}/creds"
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR: Final = PROJECT_ROOT / "sandbox"
 RUNTIME_SCRIPTS: Final = (
-    "runner-requirements.txt",
     "install-tools.sh",
     "as-runner.sh",
-    "run-agent.sh",
+    "fileops.py",
     "detach.sh",
     "collect-changes.sh",
     "lockfile-hash.sh",
@@ -76,12 +73,6 @@ class BuiltSnapshot:
     sandbox_group_id: str
     name: str
     manifest: SnapshotManifest
-
-
-@dataclass(frozen=True)
-class RunnerBundle:
-    data: bytes
-    sha256: str
 
 
 def snapshot_name(repo: RepoContext) -> str:
@@ -126,75 +117,6 @@ async def resolve_base_head(repo: RepoContext) -> str:
     if not isinstance(sha, str) or not SHA1_RE.fullmatch(sha):
         raise RuntimeError(f"GitHub returned no commit for {repo.full_name}:{repo.config.base_branch}")
     return sha
-
-
-def build_runner_bundle(root: Path = PROJECT_ROOT) -> RunnerBundle:
-    """Create a deterministic zip importable through PYTHONPATH.
-
-    The runner package lands in Milestone B; Milestone A still packages the agent
-    and schema modules, so this seam can be tested before the entry point exists.
-    """
-    files: dict[str, bytes] = {}
-    factory_init = root / "factory" / "__init__.py"
-    files["factory/__init__.py"] = factory_init.read_bytes() if factory_init.is_file() else b""
-    identifiers = root / "factory" / "identifiers.py"
-    files["factory/identifiers.py"] = identifiers.read_bytes()
-    for package in ("runner", "agents", "schemas"):
-        base = root / "factory" / package
-        if base.is_dir():
-            for path in base.rglob("*"):
-                if "__pycache__" not in path.parts and path.is_file() and path.suffix in {".py", ".md"}:
-                    files[path.relative_to(root).as_posix()] = path.read_bytes()
-    # Importing a submodule executes its package __init__. The host packages
-    # intentionally re-export host-only lifecycle code, so the runner archive
-    # uses narrow package initializers and includes only the shared sandbox type.
-    files["factory/agents/__init__.py"] = b""
-    files["factory/sandbox/__init__.py"] = b""
-    files["factory/sandbox/types.py"] = (root / "factory" / "sandbox" / "types.py").read_bytes()
-    output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for name, data in sorted(files.items()):
-            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-            info.external_attr = 0o644 << 16
-            archive.writestr(info, data)
-    data = output.getvalue()
-    return RunnerBundle(data, hashlib.sha256(data).hexdigest())
-
-
-async def ensure_runner_bundle(sandbox: RenderSandbox, bundle: RunnerBundle | None = None) -> bool:
-    """Atomically replace the uploaded runner zip after checking its hash in the sandbox."""
-    payload = bundle or await asyncio.to_thread(build_runner_bundle)
-    control_timeout = sandbox.client.timings.control_timeout_seconds
-    current = await sandbox.exec(
-        f"cat {shq(f'{APP_DIR}/runner.sha256')} 2>/dev/null",
-        timeout_seconds=control_timeout,
-    )
-    if current.stdout.strip() == payload.sha256:
-        return False
-    stage = f"/tmp/factory-runner-{uuid.uuid4().hex}"  # noqa: S108
-    archive = f"{stage}/runner.zip"
-    await checked(sandbox, f"mkdir -m 700 {shq(stage)}", timeout_seconds=control_timeout)
-    try:
-        await sandbox.upload(archive, payload.data)
-        command = " && ".join(
-            (
-                f"[ \"$(sha256sum {shq(archive)} | cut -d' ' -f1)\" = {shq(payload.sha256)} ]",
-                f"install -o root -g root -m 0444 {shq(archive)} {shq(f'{APP_DIR}/runner.zip.next')}",
-                f"mv {shq(f'{APP_DIR}/runner.zip.next')} {shq(f'{APP_DIR}/runner.zip')}",
-                f"printf '%s\\n' {shq(payload.sha256)} > {shq(f'{APP_DIR}/runner.sha256.next')}",
-                f"chmod 0444 {shq(f'{APP_DIR}/runner.sha256.next')}",
-                f"mv {shq(f'{APP_DIR}/runner.sha256.next')} {shq(f'{APP_DIR}/runner.sha256')}",
-            )
-        )
-        await checked(
-            sandbox,
-            command,
-            timeout_seconds=control_timeout,
-            operation="runner bundle install",
-        )
-    finally:
-        await sandbox.exec(f"rm -rf -- {shq(stage)}", timeout_seconds=control_timeout)
-    return True
 
 
 async def build_snapshot(
@@ -244,7 +166,7 @@ async def build_snapshot(
             base_branch=branch,
             sha=sha,
             lockfile_hash=lockfile_hash,
-            runner_requirements_hash=runner_requirements_hash(),
+            scripts_hash=scripts_hash(),
             install=install,
             created_at=datetime.now(UTC).isoformat(),
         )
@@ -289,7 +211,6 @@ async def _prepare_runtime(sandbox: RenderSandbox) -> None:
     await checked(sandbox, _create_runner_user_command(), timeout_seconds=control_timeout)
     await sandbox.upload(f"{APP_DIR}/env", _env_file())
     await sandbox.upload(f"{APP_DIR}/gitconfig", GITCONFIG.encode())
-    await ensure_runner_bundle(sandbox)
 
 
 async def _clone_and_scrub(sandbox: RenderSandbox, repo: RepoContext, sha: str) -> None:
@@ -400,7 +321,7 @@ def _env_file() -> bytes:
         f"FACTORY_REPO_DIR={REPO_DIR}",
         f"FACTORY_SCRATCH_DIR={SCRATCH_DIR}",
         f"FACTORY_RUN_AS={RUN_AS}",
-        f"FACTORY_PYTHON={SANDBOX_ROOT}/venv/bin/python",
+        f"FACTORY_PYTHON={SANDBOX_PYTHON}",
         f"FACTORY_PATH={RUNNER_PATH}",
         f"FACTORY_RUNNER_HOME={RUNNER_HOME}",
         f"FACTORY_RUNNER_TMP={RUNNER_TMP}",
@@ -434,12 +355,19 @@ def _manifest_json(manifest: SnapshotManifest) -> bytes:
         "baseBranch": raw["base_branch"],
         "sha": raw["sha"],
         "lockfileHash": raw["lockfile_hash"],
-        "runnerRequirementsHash": raw["runner_requirements_hash"],
+        "scriptsHash": raw["scripts_hash"],
         "install": raw["install"],
         "createdAt": raw["created_at"],
     }
     return (json.dumps(payload, indent=2) + "\n").encode()
 
 
-def runner_requirements_hash() -> str:
-    return hashlib.sha256((SCRIPTS_DIR / "runner-requirements.txt").read_bytes()).hexdigest()
+def scripts_hash() -> str:
+    """Everything this deployment installs into a sandbox's app directory."""
+    digest = hashlib.sha256()
+    for relative in RUNTIME_SCRIPTS:
+        digest.update(f"{relative}\0".encode())
+        digest.update((SCRIPTS_DIR / relative).read_bytes())
+    digest.update(_env_file())
+    digest.update(GITCONFIG.encode())
+    return digest.hexdigest()

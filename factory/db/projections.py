@@ -13,8 +13,6 @@ from psycopg.types.json import Jsonb
 from factory.db.pool import Db, Tx
 from factory.db.read import EVENT_COLUMNS, LogEvent, to_event
 from factory.events.catalog import (
-    agent_run_finished,
-    agent_run_started,
     run_awaiting_reply,
     run_cleaned_up,
     run_finished,
@@ -23,7 +21,6 @@ from factory.events.catalog import (
     run_sandbox_attached,
     run_started,
     run_stopped,
-    tool_call,
 )
 
 
@@ -137,43 +134,7 @@ class _Threads:
         )
 
 
-@dataclass(frozen=True)
-class _AgentRuns:
-    table: str = "agent_runs"
-    key: Sequence[str] = ("id",)
-    operational: Sequence[str] = ()
-
-    async def apply(self, tx: Tx, event: LogEvent) -> None:
-        if not event.stream.startswith("agent_run:"):
-            return
-        agent_run_id = event.stream.removeprefix("agent_run:")
-        if event.type == agent_run_started.type:
-            started = agent_run_started.parse(event.payload)
-            await tx.query(
-                "insert into agent_runs (id, run_id, thread, agent_id, model, state, started_at) "
-                "values (%s, %s, %s, %s, %s, 'running', %s)",
-                (agent_run_id, started.run_id, event.thread, started.agent_id, started.model, event.created_at),
-            )
-        elif event.type == tool_call.type:
-            await tx.query("update agent_runs set tool_calls = tool_calls + 1 where id = %s", (agent_run_id,))
-        elif event.type == agent_run_finished.type:
-            finished = agent_run_finished.parse(event.payload)
-            await tx.query(
-                "update agent_runs set state = %s, turns = %s, usage = %s, cost_usd = %s, sandbox_requests = %s, "
-                "finished_at = %s where id = %s",
-                (
-                    finished.outcome,
-                    finished.turns,
-                    Jsonb(finished.usage.model_dump(mode="json", exclude_none=True)),
-                    finished.cost_usd,
-                    finished.sandbox_requests,
-                    event.created_at,
-                    agent_run_id,
-                ),
-            )
-
-
-PROJECTIONS: tuple[Projection, ...] = (_Runs(), _Threads(), _AgentRuns())
+PROJECTIONS: tuple[Projection, ...] = (_Runs(), _Threads())
 
 
 async def project(tx: Tx, event: LogEvent, projections: Sequence[Projection] = PROJECTIONS) -> None:

@@ -14,7 +14,7 @@ import yaml
 from scripts.common import ROOT, Check, command_check, load_environment, print_checks, require_values
 from scripts.database import database_checks
 
-GATEWAY_ENV = ("RENDER_API_KEY", "GITHUB_WEBHOOK_SECRET", "DATABASE_URL", "EVENTS_READ_TOKEN")
+GATEWAY_ENV = ("RENDER_API_KEY", "GITHUB_WEBHOOK_SECRET", "DATABASE_URL")
 WORKFLOW_ENV = (
     "RENDER_API_KEY",
     "RENDER_WORKSPACE_ID",

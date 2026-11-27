@@ -6,9 +6,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from typing import Any, Generic, TypeVar, cast
 
+import logfire
 from pydantic import ValidationError
 from render.workflows import TaskContext, TaskDefinition
 
+from factory import tracing
 from factory.config import require_repo
 from factory.db import Db
 from factory.events import warn
@@ -84,9 +86,10 @@ def define_github_task(spec: GitHubTaskSpec[InputT], work: StageWork[InputT, Dat
         reply_to = spec.reply_to(task_input) if identity.is_root else None
         trigger = spec.trigger(task_input) if identity.is_root else None
         mode: RunMode = "continue" if not identity.is_root else "reply" if reply_to else "replace"
+        thread = spec.thread(task_input)
         options = RunOptions(
             repo=repo,
-            thread=spec.thread(task_input),
+            thread=thread,
             task=spec.name,
             title=spec.title,
             actor=task_input.actor,
@@ -110,7 +113,33 @@ def define_github_task(spec: GitHubTaskSpec[InputT], work: StageWork[InputT, Dat
                     )
             return await work(thread_run, task_input, ctx)
 
-        result = await with_run(identity, options, started)
+        carried = task_input.trace_context.model_dump() if task_input.trace_context else None
+        baggage = {
+            "factory.trace_id": identity.trace_id,
+            "factory.run_id": identity.run_id,
+            "factory.repo": repo.full_name,
+            "factory.thread": thread.name,
+        }
+        try:
+            with (
+                tracing.attached(carried),
+                logfire.set_baggage(**baggage),
+                logfire.span(
+                    "{title} on {repo} {thread}",
+                    title=spec.title,
+                    repo=repo.full_name,
+                    thread=thread.name,
+                    task=spec.name,
+                    actor=task_input.actor,
+                    mode=mode,
+                ) as span,
+            ):
+                result = await with_run(identity, options, started)
+                span.set_attributes({"state": result.state, "outcome": result.outcome})
+                if result.state == "failed":
+                    span.set_level("warn")
+        finally:
+            tracing.flush()
         return task_result_json(result)
 
     async def registered_entry(ctx: TaskContext, raw: object) -> dict[str, Any]:

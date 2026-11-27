@@ -8,6 +8,8 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
+import logfire
+
 from factory.agents import AgentError, AgentErrorCode
 from factory.config import RepoContext, get_config
 from factory.db import Db, append, workflows_db
@@ -37,7 +39,6 @@ D = TypeVar("D")
 _AGENT_STOPS: dict[AgentErrorCode, str] = {
     "max_turns": "ran out of turns",
     "timeout": "timed out",
-    "no_submission": "ended without submitting a result",
     "invalid_submission": "submitted an invalid result",
     "output_invalid": "submitted an invalid result",
 }
@@ -126,6 +127,7 @@ class ThreadRun:
 
     async def report_progress(self, summary: str) -> None:
         await self.assert_current()
+        logfire.info("{summary}", summary=summary)
         await self._append(run_progress, run_progress.payload(summary=summary))
         await self._sync()
 

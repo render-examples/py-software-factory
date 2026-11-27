@@ -31,7 +31,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install --yes shellcheck
+      - name: Install shellcheck and ripgrep
+        run: sudo apt-get update && sudo apt-get install --yes shellcheck ripgrep
       - run: uv sync --locked
       - run: make check

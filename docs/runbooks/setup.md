@@ -70,9 +70,6 @@ Run the read-only/dry-run handoff:
 RENDER_API_KEY=... RENDER_WORKSPACE_ID=... uv run setup-render
 ```
 
-If `.env` has no `EVENTS_READ_TOKEN`, this generates one into it without printing it. Add the same value to the
-`factory-gateway` group.
-
 Create the sandbox group explicitly:
 
 ```bash
@@ -83,16 +80,9 @@ Put the resulting `sbg-...` ID in `FACTORY_SANDBOX_GROUP_ID` on `factory-workflo
 groups exactly as described in [configuration.md](../configuration.md). Never add `RENDER_ADMIN_API_KEY` to a
 service.
 
-Credential brokering is optional. The default `brokered_model_access=False` keeps every model loop in Workflow
-compute while tools remain sandboxed. To enable in-sandbox loops, configure the restricted credential with:
-
-```bash
-RENDER_ADMIN_API_KEY=... ANTHROPIC_API_KEY=... \
-  uv run setup-render --group-id sbg-... --apply-credential
-```
-
-Run the live broker probe, then set `brokered_model_access=True` and redeploy. If credential administration is
-unavailable, keep the safe default; never copy `ANTHROPIC_API_KEY` into a sandbox.
+For tracing, create two Logfire write tokens in your Logfire project, one per service, and add them as
+`LOGFIRE_TOKEN` to the `factory-gateway` and `factory-workflows` groups. Decide whether traces include prompts and
+repository content before the first run (see [Observability](../configuration.md#observability-logfire)).
 
 ## 5. Configure repositories
 
@@ -122,18 +112,18 @@ uv run doctor --remote \
   --env-file .env
 ```
 
-Also verify in Render that all expected Workflow tasks registered. To perform the broker probe in a disposable
-sandbox, rerun the command with `--probe-brokering`. This creates a sandbox and makes one minimal billable model
-request, so use it only in an authorized workspace. The implementation sends no provider key in input, files,
-commands, or environment.
+Also verify in Render that all expected Workflow tasks registered.
 
-`doctor --remote` checks that `factory-workflows` holds `DATABASE_URL` (by name only), and that the database connects
-and is migrated. For the connection, put `factory-db`'s external URL in `.env` as `DATABASE_URL` and allow your IP on
+`doctor --remote` checks that `factory-workflows` holds `DATABASE_URL` and reports which groups hold `LOGFIRE_TOKEN`
+(by name only), and that the database connects and is migrated. For the connection, put `factory-db`'s external URL in `.env` as `DATABASE_URL` and allow your IP on
 `factory-db` while it runs (see [Database](../configuration.md#database)).
 
 Finally send a GitHub `ping`, inspect Recent Deliveries, and trigger Triage on a disposable issue. Success requires
 the expected GitHub result, not merely HTTP 202 or a queued task. The run should also appear as rows in the `runs`
-and `threads` tables.
+and `threads` tables and, with tracing on, as one Logfire trace from the gateway delivery through the agent run.
+
+The first run after a deploy that changes any `sandbox/` script rebuilds the repository snapshot inline, so it takes
+several minutes longer.
 
 ## Upgrading an existing deployment
 

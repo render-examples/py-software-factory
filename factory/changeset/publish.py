@@ -8,6 +8,8 @@ import uuid
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
 
+import logfire
+
 from factory.changeset.changes import (
     ChangedFile,
     CheckedChanges,
@@ -89,17 +91,28 @@ async def publish(publish_input: PublishInput, paths: PublishPaths | None = None
         configured = get_config().limits
         limits = PublishLimits(configured.max_changed_files, configured.max_file_bytes)
 
-    file = await _collect(publish_input.sandbox, publish_input.base_sha, limits, paths)
-    checked = check_changes(parse_changes_file(file), limits)
-    if isinstance(checked, Refused):
-        return checked
+    with logfire.span("publish {branch}", branch=publish_input.branch, base_sha=publish_input.base_sha) as span:
+        file = await _collect(publish_input.sandbox, publish_input.base_sha, limits, paths)
+        checked = check_changes(parse_changes_file(file), limits)
+        if isinstance(checked, Refused):
+            span.set_attribute("refused", [reason.kind for reason in checked.refused])
+            span.set_level("warn")
+            return checked
 
-    git = publish_input.git or git_data(publish_input.repo)
-    try:
-        return await _write(git, publish_input, checked)
-    finally:
-        if publish_input.git is None:
-            await git.aclose()
+        git = publish_input.git or git_data(publish_input.repo)
+        try:
+            published = await _write(git, publish_input, checked)
+        finally:
+            if publish_input.git is None:
+                await git.aclose()
+        span.set_attributes(
+            {
+                "commit_sha": published.commit_sha,
+                "tree_sha": published.tree_sha,
+                "changed_files": len(published.changed_files),
+            }
+        )
+        return published
 
 
 async def _write(git: GitDataClient, publish_input: PublishInput, checked: CheckedChanges) -> Published:

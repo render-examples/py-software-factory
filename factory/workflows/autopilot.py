@@ -10,6 +10,7 @@ from typing import Any, Literal, TypedDict, cast
 from render import RenderAsync
 from render.workflows import TaskDefinition
 
+from factory import tracing
 from factory.config import Tasks, get_config, require_env
 from factory.events import warn
 from factory.runs import Outcome, Run, TaskResult
@@ -90,11 +91,13 @@ async def autopilot_stage(
         state: Literal["done", "failed"] = "done" if result.state == "done" else "failed"
         return finish(f"stopped_at_{name.replace('-', '_')}", result.summary, state)
 
-    base = {
+    base: dict[str, Any] = {
         "repo": task_input.repo,
         "installation_id": task_input.installation_id,
         "actor": task_input.actor,
     }
+    if (context := tracing.carrier()) is not None:
+        base["trace_context"] = context
     await run.report_progress("running Triage")
     triage = record(
         "triage",

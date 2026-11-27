@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass
 from typing import Protocol
 
+import logfire
+
 from factory.format import code_span, fenced
 from factory.sandbox import ExecResult
 
@@ -32,29 +34,30 @@ async def run_verify(sandbox: VerifySandbox, commands: tuple[str, ...]) -> list[
     """Run configured commands in order; failures are results rather than exceptions."""
     runs: list[VerifyRun] = []
     for command in commands:
-        started = time.monotonic()
-        try:
-            result = await sandbox.exec(command, timeout_seconds=_COMMAND_TIMEOUT_SECONDS, as_runner=True)
-            output = "\n".join(part for part in (result.stdout.rstrip(), result.stderr.rstrip()) if part)
-            runs.append(
-                VerifyRun(
+        with logfire.span("verify {command}", command=command) as span:
+            started = time.monotonic()
+            try:
+                result = await sandbox.exec(command, timeout_seconds=_COMMAND_TIMEOUT_SECONDS, as_runner=True)
+                output = "\n".join(part for part in (result.stdout.rstrip(), result.stderr.rstrip()) if part)
+                run = VerifyRun(
                     command,
                     result.exit_code == 0,
                     result.exit_code,
                     _tail(output),
                     round((time.monotonic() - started) * 1000),
                 )
-            )
-        except Exception as error:
-            runs.append(
-                VerifyRun(
+            except Exception as error:
+                run = VerifyRun(
                     command,
                     False,
                     None,
                     _tail(f"The command did not finish: {error}"),
                     round((time.monotonic() - started) * 1000),
                 )
-            )
+            span.set_attributes({"passed": run.passed, "exit_code": run.exit_code})
+            if not run.passed:
+                span.set_level("warn")
+            runs.append(run)
     return runs
 
 

@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Protocol
 
+import logfire
 from render.workflows import TaskContext
 
+from factory import tracing
 from factory.config import Tasks, require_repo
 from factory.github import github_for
 from factory.runs import PermissionGitHub, check_permission
@@ -37,7 +39,16 @@ async def refresh_snapshot_run(raw: object, *, gh: RefreshGitHub | None = None) 
 
 
 async def _refresh_entry(_ctx: TaskContext, raw: object) -> dict[str, str]:
-    return await refresh_snapshot_run(raw)
+    task_input = RefreshSnapshotInput.model_validate(raw)
+    carried = task_input.trace_context.model_dump() if task_input.trace_context else None
+    try:
+        with (
+            tracing.attached(carried),
+            logfire.span("Refresh snapshot of {repo} at {sha}", repo=task_input.repo, sha=task_input.sha),
+        ):
+            return await refresh_snapshot_run(raw)
+    finally:
+        tracing.flush()
 
 
 refresh_snapshot_task = app.task(name=Tasks.REFRESH_SNAPSHOT, timeout_seconds=60 * 60, retry=None)(_refresh_entry)

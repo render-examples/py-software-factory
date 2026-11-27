@@ -1,5 +1,4 @@
 import getpass
-import hashlib
 import json
 import os
 import shlex
@@ -17,19 +16,11 @@ def script(name: str) -> str:
     return (ROOT / "sandbox" / name).read_text()
 
 
-def test_run_agent_is_protocol_v3_without_key_material() -> None:
-    source = script("run-agent.sh")
-    assert "PYTHONPATH=" in source
-    assert "-m factory.runner" in source
-    assert "--key-stdin" not in source
-    assert "run_dir/key" not in source
-    assert "FACTORY_RUNNER_NODE" not in source
-
-
 def test_verify_uses_python_and_has_no_node_or_dumpability_probe() -> None:
     source = script("verify.sh")
     assert "FACTORY_PYTHON" in source
-    assert '"protocol": 3' in source
+    assert "fileops.py" in source
+    assert "runner.zip" not in source
     assert "FACTORY_NODE" not in source
     assert "non_dumpable" not in source
     assert "/proc/" not in source
@@ -46,7 +37,7 @@ def test_verify_executes_with_exported_generated_environment(tmp_path: Path) -> 
     for relative in (
         "verify.sh",
         "as-runner.sh",
-        "run-agent.sh",
+        "fileops.py",
         "detach.sh",
         "lockfile-hash.sh",
         "build/git-credential-staged.sh",
@@ -56,9 +47,6 @@ def test_verify_executes_with_exported_generated_environment(tmp_path: Path) -> 
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / "sandbox" / relative, destination)
 
-    runner = b"runner archive"
-    (app / "runner.zip").write_bytes(runner)
-    (app / "runner.sha256").write_text(hashlib.sha256(runner).hexdigest() + "\n")
     (app / "gitconfig").write_text("")
 
     repo.mkdir()
@@ -108,7 +96,6 @@ def test_verify_executes_with_exported_generated_environment(tmp_path: Path) -> 
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout.splitlines()[-1])
     assert report["runAs"] == getpass.getuser()
-    assert report["protocol"] == 3
 
 
 def test_install_tools_uses_pinned_uv_managed_python_312_and_venv() -> None:
@@ -118,9 +105,7 @@ def test_install_tools_uses_pinned_uv_managed_python_312_and_venv() -> None:
     assert "UV_PYTHON_INSTALL_DIR=" in source
     assert 'uv" venv' in source
     assert '"$root/venv"' in source
-    assert "--require-hashes" in source
-    assert "runner-requirements.txt" in source
-    assert (ROOT / "sandbox" / "runner-requirements.txt").is_file()
+    assert "pip install" not in source
     assert "node" not in source.lower()
 
 

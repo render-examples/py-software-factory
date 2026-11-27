@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from factory.config import require_repo, resolve_repo
-from factory.config_model import FactoryConfig, RepoConfig, SandboxSettings
+from factory.config_model import FactoryConfig, RepoConfig, TelemetrySettings
 from tests.fixtures import REPO, TEST_CONFIG
 
 
@@ -51,9 +51,9 @@ def test_accepts_a_safe_multisegment_base_branch() -> None:
     assert FactoryConfig.model_validate(raw).repos["acme/web"].base_branch == "release/2.x"
 
 
-def test_brokered_model_access_is_explicit_and_off_by_default() -> None:
-    assert SandboxSettings().brokered_model_access is False
-    assert SandboxSettings(brokered_model_access=True).brokered_model_access is True
+def test_telemetry_content_capture_is_explicit_and_off_by_default() -> None:
+    assert TelemetrySettings().include_content is False
+    assert TelemetrySettings(include_content=True).include_content is True
 
 
 def test_rejects_unknown_keys_so_a_typo_fails_at_startup() -> None:

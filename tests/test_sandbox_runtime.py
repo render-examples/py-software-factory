@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import importlib
-import os
-import re
+import json
 import shlex
 import subprocess
-import sys
-import zipfile
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from render.client.errors import RateLimitError, ServerError
@@ -35,12 +31,11 @@ from factory.sandbox.client import (
     SandboxApi,
     SandboxClient,
     SandboxTimings,
-    measure_sandbox_requests,
 )
 from factory.sandbox.egress import builder_egress, task_egress
-from factory.sandbox.open import open_sandbox
+from factory.sandbox.open import OpenSandboxDeps, open_sandbox
 from factory.sandbox.shell import shq
-from factory.sandbox.snapshot import _env_file, build_runner_bundle, credential_file
+from factory.sandbox.snapshot import RUNTIME_SCRIPTS, SCRIPTS_DIR, _env_file, credential_file, scripts_hash
 from factory.sandbox.types import BranchRef, ExecResult, PullRef
 
 
@@ -163,42 +158,6 @@ async def test_calls_are_not_paced() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_meter_isolates_concurrent_agent_contexts() -> None:
-    client = SandboxClient(cast(SandboxApi, FakeApi()))
-
-    async def operation() -> str:
-        await asyncio.sleep(0)
-        return "ok"
-
-    async def measured(count: int) -> int:
-        with measure_sandbox_requests() as meter:
-            await asyncio.gather(*(client.call(operation) for _ in range(count)))
-            return meter.count
-
-    assert await asyncio.gather(measured(2), measured(3)) == [2, 3]
-
-
-@pytest.mark.asyncio
-async def test_request_meter_counts_each_retry_attempt() -> None:
-    client = SandboxClient(
-        cast(SandboxApi, FakeApi()),
-        timings=SandboxTimings(retry_base_seconds=0, retry_attempts=3),
-    )
-    attempts = 0
-
-    async def operation() -> str:
-        nonlocal attempts
-        attempts += 1
-        if attempts < 3:
-            raise RateLimitError("slow down", status_code=429)
-        return "ok"
-
-    with measure_sandbox_requests() as meter:
-        assert await client.call(operation) == "ok"
-    assert meter.count == 3
-
-
-@pytest.mark.asyncio
 async def test_call_retries_only_429_and_503_with_capped_backoff() -> None:
     clock = FakeClock()
     client = SandboxClient(
@@ -281,15 +240,23 @@ async def test_short_exec_uses_sdk_stream() -> None:
 @pytest.mark.asyncio
 async def test_long_exec_uses_private_detached_transport_and_quotes_command() -> None:
     api = FakeApi()
+    detached: list[Path] = []
 
     def events(command: str) -> list[SandboxExecEvent]:
-        if "if [ -f" in command:
-            return [SandboxExecOutput("stdout", "7\n"), SandboxExecExit(0)]
-        if command.startswith("tail") and command.endswith("/stdout'"):
-            return [SandboxExecOutput("stdout", "out\n"), SandboxExecExit(0)]
-        if command.startswith("tail") and command.endswith("/stderr'"):
-            return [SandboxExecOutput("stdout", "err\n"), SandboxExecExit(0)]
-        return [SandboxExecExit(0)]
+        if "detach.sh" in command:
+            directory = Path(shlex.split(command)[2])
+            directory.mkdir()
+            (directory / "stdout").write_text("out\nmore\n")
+            (directory / "stderr").write_text("err\n")
+            (directory / "exit").write_text("7\n")
+            detached.append(directory)
+            return [SandboxExecExit(0)]
+        result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+        return [
+            SandboxExecOutput("stdout", result.stdout),
+            SandboxExecOutput("stderr", result.stderr),
+            SandboxExecExit(result.returncode),
+        ]
 
     api.event_factory = events
     client = SandboxClient(cast(SandboxApi, api))
@@ -300,199 +267,20 @@ async def test_long_exec_uses_private_detached_transport_and_quotes_command() ->
 
     start_argv = shlex.split(api.commands[0])
     assert start_argv[-1] == hostile
-    assert result.exit_code == 7
-    assert result.stdout == "out\n"
-    assert result.stderr == "err\n"
+    assert result == ExecResult(7, "out\nmore\n", "err\n")
     assert hostile not in api.commands[1:]
+    # Start, one poll that returns the status and both tails, and cleanup.
+    assert len(api.commands) == 3
+    assert not detached[0].exists()
 
 
-class FollowedFile:
-    """Answers following polls from a file that grows by one step per poll, like a detached runner writing it."""
-
-    def __init__(self, sizes: list[int], data: bytes, *, exit_after: int | None) -> None:
-        self.sizes = sizes
-        self.data = data
-        self.exit_after = exit_after
-        self.polls = 0
-        self.offsets: list[int] = []
-
-    def __call__(self, command: str) -> list[SandboxExecEvent]:
-        if "detach.sh" in command or command.startswith("rm -rf"):
-            return [SandboxExecExit(0)]
-        if command.startswith("tail -c 262144"):
-            stream = "out\n" if command.endswith("/stdout'") else "err\n"
-            return [SandboxExecOutput("stdout", stream), SandboxExecExit(0)]
-        match = re.search(r"tail -c \+(\d+) ", command)
-        assert match is not None, command
-        assert "| head -c 262144 " in command
-        offset = int(match.group(1)) - 1
-        self.offsets.append(offset)
-        written = self.sizes[min(self.polls, len(self.sizes) - 1)]
-        self.polls += 1
-        done = self.exit_after is not None and self.polls >= self.exit_after
-        chunk = self.data[offset:written][: 256 * 1024]
-        events: list[SandboxExecEvent] = [SandboxExecOutput("stderr", "exit=5" if done else "running")]
-        if chunk:
-            events.insert(0, SandboxExecOutput("stdout", chunk.decode()))
-        return [*events, SandboxExecExit(0)]
-
-
-def following_sandbox(api: FakeApi, clock: FakeClock) -> RenderSandbox:
-    client = SandboxClient(
-        cast(SandboxApi, api),
-        sleep=clock.sleep,
-        clock=clock,
-    )
-    return RenderSandbox("sbx-fake", client)
-
-
-@pytest.mark.asyncio
-async def test_exec_following_reads_the_file_tail_in_each_single_request_poll() -> None:
-    data = b"".join(f"line {n}\n".encode() for n in range(10))
-    followed = FollowedFile([0, 12, 40, len(data)], data, exit_after=4)
-    api = FakeApi()
-    api.event_factory = followed
-    clock = FakeClock()
-    received: list[bytes] = []
-    offset = 0
-
-    def on_output(chunk: bytes) -> None:
-        nonlocal offset
-        received.append(chunk)
-        offset += len(chunk)
-
-    result = await following_sandbox(api, clock).exec_following(
-        "run it",
-        timeout_seconds=600,
-        follow_path="/opt/factory/scratch/runs/agent-1.jsonl",
-        offset=lambda: offset,
-        on_output=on_output,
-    )
-
-    assert result == ExecResult(5, "out\n", "err\n")
-    assert b"".join(received) == data
-    assert followed.offsets == [0, 0, 12, 40]
-    polls = [command for command in api.commands if "tail -c +" in command]
-    assert len(polls) == followed.polls == 4
-    assert all("/opt/factory/scratch/runs/agent-1.jsonl" in command for command in polls)
-    assert "detach.sh" in api.commands[0]
-    assert api.commands[1:5] == polls
-    assert len(api.commands) == 1 + 4 + 2 + 1
-    assert api.commands[-1].startswith("rm -rf -- '/tmp/factory-detached-")
-    assert clock.sleeps == [2.0, 3.0, 4.5]
-
-
-@pytest.mark.asyncio
-async def test_exec_following_caps_each_poll_at_256_kib_and_resumes_at_the_offset() -> None:
-    data = b"x" * (600 * 1024)
-    followed = FollowedFile([len(data)], data, exit_after=4)
-    api = FakeApi()
-    api.event_factory = followed
-    received: list[bytes] = []
-
-    await following_sandbox(api, FakeClock()).exec_following(
-        "run it",
-        timeout_seconds=600,
-        follow_path="/tmp/out.jsonl",
-        offset=lambda: sum(map(len, received)),
-        on_output=received.append,
-    )
-
-    assert [len(chunk) for chunk in received] == [256 * 1024, 256 * 1024, 88 * 1024]
-    assert followed.offsets == [0, 256 * 1024, 512 * 1024, 600 * 1024]
-
-
-@pytest.mark.asyncio
-async def test_exec_following_backs_off_to_the_cap_and_honors_the_deadline() -> None:
-    followed = FollowedFile([0], b"", exit_after=None)
-    api = FakeApi()
-    api.event_factory = followed
-    clock = FakeClock()
-
-    with pytest.raises(TimeoutError, match="did not report completion"):
-        await following_sandbox(api, clock).exec_following(
-            "never ends",
-            timeout_seconds=60,
-            follow_path="/tmp/out.jsonl",
-            offset=lambda: 0,
-            on_output=lambda _chunk: None,
-        )
-
-    assert clock.sleeps[:6] == [2.0, 3.0, 4.5, 6.75, 10.0, 10.0]
-    assert sum(clock.sleeps[:-1]) < 60 + 15 <= sum(clock.sleeps)
-    assert followed.polls == len(clock.sleeps) + 1
-    assert api.commands[-1].startswith("rm -rf -- '/tmp/factory-detached-")
-
-
-@pytest.mark.asyncio
-async def test_exec_following_poll_command_frames_status_and_bytes_in_a_real_shell(tmp_path: Path) -> None:
-    followed = tmp_path / "run.jsonl"
-    followed.write_bytes(b'{"a":1}\n{"b":2}\n')
-    detached: list[str] = []
-    api = FakeApi()
-
-    def events(command: str) -> list[SandboxExecEvent]:
-        if "detach.sh" in command:
-            detached.append(shlex.split(command)[2])
-            return [SandboxExecExit(0)]
-        if "tail -c +" in command:
-            Path(detached[0]).mkdir(exist_ok=True)
-            Path(detached[0], "exit").write_text("0\n")
-        result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
-        return [
-            SandboxExecOutput("stdout", result.stdout),
-            SandboxExecOutput("stderr", result.stderr),
-            SandboxExecExit(result.returncode),
-        ]
-
-    api.event_factory = events
-    received: list[bytes] = []
-    result = await following_sandbox(api, FakeClock()).exec_following(
-        "run it",
-        timeout_seconds=600,
-        follow_path=str(followed),
-        offset=lambda: len(b'{"a":1}\n'),
-        on_output=received.append,
-    )
-
-    assert received == [b'{"b":2}\n']
-    assert result.exit_code == 0
-    assert not Path(detached[0]).exists()
-
-
-@pytest.mark.asyncio
-async def test_exec_following_rejects_an_unframed_status() -> None:
-    api = FakeApi()
-
-    def events(command: str) -> list[SandboxExecEvent]:
-        if "tail -c +" in command:
-            return [SandboxExecOutput("stderr", "tail: oops\nrunning"), SandboxExecExit(0)]
-        return [SandboxExecExit(0)]
-
-    api.event_factory = events
-    with pytest.raises(RuntimeError, match="invalid detached status"):
-        await following_sandbox(api, FakeClock()).exec_following(
-            "run it",
-            timeout_seconds=600,
-            follow_path="/tmp/out.jsonl",
-            offset=lambda: 0,
-            on_output=lambda _chunk: None,
-        )
-    assert api.commands[-1].startswith("rm -rf -- '/tmp/factory-detached-")
-
-
-def test_egress_uses_only_trusted_hosts_and_builder_has_no_model_host() -> None:
+def test_task_egress_reaches_only_github_and_the_repository_hosts() -> None:
     context = repo(egress=("packages.acme.test",))
 
-    task = task_egress(context, ("api.anthropic.com", "api.anthropic.com"))
+    task = task_egress(context)
     builder = builder_egress(context)
 
-    assert [rule.domain for rule in task.rules] == [
-        "github.com",
-        "api.anthropic.com",
-        "packages.acme.test",
-    ]
-    assert "api.anthropic.com" not in [rule.domain for rule in builder.rules]
+    assert [rule.domain for rule in task.rules] == ["github.com", "packages.acme.test"]
     assert {"pypi.org", "files.pythonhosted.org", "release-assets.githubusercontent.com"} <= {
         rule.domain for rule in builder.rules
     }
@@ -501,7 +289,7 @@ def test_egress_uses_only_trusted_hosts_and_builder_has_no_model_host() -> None:
 def test_allow_all_repo_remains_explicit() -> None:
     config = RepoConfig(base_branch="main", verify=("pytest",), egress="allow-all")
     context = RepoContext("acme", "widget", "acme/widget", 7, config)
-    assert task_egress(context, ("api.anthropic.com",)) == NetworkPolicy(type="allow-all")
+    assert task_egress(context) == NetworkPolicy(type="allow-all")
 
 
 @pytest.mark.asyncio
@@ -555,58 +343,101 @@ def test_shell_arguments_and_tokens_stay_out_of_command_syntax() -> None:
         credential_file("secret\ninjected")
 
 
-def test_runner_bundle_is_deterministic_and_scoped(tmp_path: Path) -> None:
-    (tmp_path / "factory" / "agents").mkdir(parents=True)
-    (tmp_path / "factory" / "schemas").mkdir()
-    (tmp_path / "factory" / "sandbox").mkdir()
-    (tmp_path / "factory" / "agents" / "a.py").write_text("A = 1\n")
-    (tmp_path / "factory" / "schemas" / "s.py").write_text("S = 2\n")
-    (tmp_path / "factory" / "sandbox" / "types.py").write_text("ROOT = '/opt/factory'\n")
-    (tmp_path / "factory" / "identifiers.py").write_text("SAFE = True\n")
-    (tmp_path / "factory" / "secret.py").write_text("TOKEN = 'do not package'\n")
+class SnapshotApi(FakeApi):
+    """Serves a manifest per created sandbox, and enough command output for open_sandbox to finish."""
 
-    first = build_runner_bundle(tmp_path)
-    second = build_runner_bundle(tmp_path)
+    def __init__(self, scripts: list[str]) -> None:
+        super().__init__()
+        self.scripts = scripts
+        self.created = 0
+        self.event_factory = self.events_for
 
-    assert first == second
-    assert b"do not package" not in first.data
+    async def create(self, **kwargs: object) -> SdkSandbox:
+        self.created += 1
+        return cast(SdkSandbox, SimpleNamespace(id=f"sbx-{self.created}", status="running"))
+
+    def events_for(self, command: str) -> list[SandboxExecEvent]:
+        if "rev-parse" in command:
+            return [SandboxExecOutput("stdout", "a" * 40 + "\n"), SandboxExecExit(0)]
+        if command.startswith("if [ -f"):
+            return [SandboxExecOutput("stdout", "0\n"), SandboxExecExit(0)]
+        return [SandboxExecExit(0)]
+
+    async def copy_to(self, sandbox_id: str, local_path: str | Path, remote_path: str) -> None:
+        return None
+
+    async def copy_from(self, sandbox_id: str, remote_path: str, local_path: str | Path) -> str:
+        assert remote_path.endswith("/manifest.json")
+        manifest = {
+            "repo": "acme/widget",
+            "baseBranch": "main",
+            "sha": "b" * 40,
+            "lockfileHash": "c" * 64,
+            "install": None,
+            "createdAt": "2026-01-01T00:00:00+00:00",
+        }
+        scripts = self.scripts[min(self.created, len(self.scripts)) - 1]
+        if scripts:
+            manifest["scriptsHash"] = scripts
+        Path(local_path).write_text(json.dumps(manifest))
+        return str(local_path)
 
 
-def test_real_runner_bundle_imports_without_host_only_package_initializers(tmp_path: Path) -> None:
-    bundle = build_runner_bundle()
-    archive = tmp_path / "runner.zip"
-    archive.write_bytes(bundle.data)
-    with zipfile.ZipFile(archive) as zipped:
-        assert zipped.read("factory/agents/__init__.py") == b""
-        assert "factory/identifiers.py" in zipped.namelist()
-        assert "factory/sandbox/types.py" in zipped.namelist()
-    environment = {**os.environ, "PYTHONPATH": str(archive)}
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import factory, factory.runner.main; print(factory.__file__)",
-        ],
-        cwd=tmp_path,
-        env=environment,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    assert str(archive) in result.stdout
+def snapshot_deps(builds: list[str]) -> OpenSandboxDeps:
+    async def token(_repo: RepoContext) -> str:
+        return "token"
+
+    async def head(_repo: RepoContext) -> str:
+        return "d" * 40
+
+    async def build(_client: object, _repo: RepoContext, sha: str, **_kwargs: object) -> object:
+        builds.append(sha)
+        return None
+
+    return OpenSandboxDeps(read_token=token, resolve_base_head=head, build_snapshot=cast(Any, build))
 
 
 @pytest.mark.asyncio
-async def test_open_failure_after_creation_terminates_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
-    module = importlib.import_module("factory.sandbox.open")
-    api = FakeApi()
-    client = SandboxClient(cast(SandboxApi, api))
-
-    async def fail_bundle(sandbox: RenderSandbox, bundle: object = None) -> bool:
-        raise RuntimeError("bad runner bundle")
-
-    monkeypatch.setattr(module, "ensure_runner_bundle", fail_bundle)
-    with pytest.raises(RuntimeError, match="bad runner bundle"):
-        await module.open_sandbox(repo(), BranchRef("main"), client=client, sandbox_group_id="sbg-test")
-
+async def test_a_snapshot_with_other_scripts_is_rebuilt_once_and_reopened() -> None:
+    api = SnapshotApi(["", scripts_hash()])
+    builds: list[str] = []
+    opened = await open_sandbox(
+        repo(),
+        BranchRef("main"),
+        client=SandboxClient(cast(SandboxApi, api)),
+        sandbox_group_id="sbg-test",
+        deps=snapshot_deps(builds),
+    )
+    assert opened.id == "sbx-2"
+    assert builds == ["d" * 40]
     assert api.terminate_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_that_is_still_stale_fails_and_cleans_up() -> None:
+    api = SnapshotApi(["0" * 64, "0" * 64])
+    with pytest.raises(RuntimeError, match="still has other factory scripts"):
+        await open_sandbox(
+            repo(),
+            BranchRef("main"),
+            client=SandboxClient(cast(SandboxApi, api)),
+            sandbox_group_id="sbg-test",
+            deps=snapshot_deps([]),
+        )
+    assert api.terminate_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_open_failure_after_creation_terminates_sandbox() -> None:
+    api = FakeApi()
+    with pytest.raises(AssertionError, match="unexpected download"):
+        await open_sandbox(
+            repo(), BranchRef("main"), client=SandboxClient(cast(SandboxApi, api)), sandbox_group_id="sbg-test"
+        )
+    assert api.terminate_calls == 1
+
+
+def test_scripts_hash_covers_every_installed_script() -> None:
+    assert "fileops.py" in RUNTIME_SCRIPTS
+    assert all((SCRIPTS_DIR / name).is_file() for name in RUNTIME_SCRIPTS)
+    assert scripts_hash() == scripts_hash()

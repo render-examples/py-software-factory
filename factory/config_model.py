@@ -28,7 +28,7 @@ class RepoConfig(_Config):
     verify: tuple[str, ...]
     """Commands that must pass before a PR opens and that PR Reviewer runs."""
     egress: tuple[str, ...] | Literal["allow-all"] = ()
-    """HTTPS hosts this repository's sandboxes may reach beyond github.com and the agents' model APIs: package
+    """HTTPS hosts this repository's sandboxes may reach beyond github.com: package
     registries and anything `install` or `verify` downloads. Exact hostnames; `*.` only as the leftmost label.
     Every other destination is blocked. "allow-all" lifts the restriction for this repository."""
 
@@ -52,10 +52,14 @@ class Limits(_Config):
 class SandboxSettings(_Config):
     timeout_seconds: int = Field(default=4 * 60 * 60, ge=60)
     """Render terminates a sandbox after this, even if the task that opened it crashed."""
-    brokered_model_access: bool = False
-    """Run agents in the sandbox only when its group has a verified provider credential.
 
-    When false, every model loop runs in the Workflow task while its tools still run in the sandbox.
+
+class TelemetrySettings(_Config):
+    include_content: bool = False
+    """Send prompts, model output, tool arguments, and tool results to Logfire.
+
+    They hold issue text and repository contents, which then leave your Render workspace. Off by default: traces
+    still carry timing, models, tokens, cost, tool names, and outcomes.
     """
 
 
@@ -69,6 +73,7 @@ class FactoryConfig(_Config):
     """GitHub permission the triggering actor needs on the repository."""
     limits: Limits = Limits()
     sandbox: SandboxSettings = SandboxSettings()
+    telemetry: TelemetrySettings = TelemetrySettings()
 
     @model_validator(mode="after")
     def _check(self) -> Self:

@@ -2,40 +2,37 @@
 
 ## Add or change an agent
 
-1. Define a stable agent ID, prompt, typed output, tool allow-list, request limit, timeout, model, and placement.
-2. Keep all model-directed tools on the sandbox workspace. Host GitHub clients are never agent tools.
-3. Add scripted model tests for valid output, rejected output, request limits, timeout mapping, and exact tool
-   authority.
-4. Add the stage/task mapping and preserve JSON-serializable task input and output.
-5. Update configuration and docs without introducing a second plan source.
+1. Define a stable agent ID, prompt, typed output, request limit, model, and whether it `writes` in
+   `factory/agents/registry.py`. Read-only agents get the read tools and a read-only shell; only writing agents get
+   `edit_file` and `write_file`.
+2. Keep every model-directed tool acting on the sandbox: commands through `SandboxWorkspace`, files through
+   `sandbox/fileops.py`. Host GitHub clients are never agent tools.
+3. Add Pydantic AI Harness capabilities in `factory/agents/tools.py`. A capability that reads or writes files through
+   the workspace (such as `FileSystem`, `ToolOutputLimits` spills, or `Memory` on a workspace store) needs a
+   filesystem-capable backend, which `SandboxWorkspace` deliberately isn't; add a `fileops.py` operation instead.
+4. Add scripted-model tests in `tests/test_agents.py` for valid output, refused tool calls, request limits, and the
+   exact tools the agent is offered. The `LocalSandbox` there runs the real helper and shell locally.
+5. Add the stage/task mapping and preserve JSON-serializable task input and output.
+6. Update configuration and docs without introducing a second plan source.
 
-## Choose a placement
+## Add a file operation
 
-Prefer **in-task** for read-only agents with frequent small tool calls when brokered model access is unnecessary.
-The provider key stays in Workflow compute; omit the provider hostname from sandbox egress.
-
-Prefer **in-sandbox** for write-capable or long-running agents where local tool calls reduce Sandbox API traffic.
-This placement requires the v3 wire protocol, runner snapshot dependencies, provider hostname in trusted egress,
-and a functioning sandbox-group broker credential.
-
-To switch placement:
-
-1. Change the agent definition, not stage code.
-2. Recalculate egress: model host allowed only for in-sandbox execution.
-3. Verify the in-task path uses the attached sandbox workspace, or the in-sandbox path uses the detached runner and
-   ends with exactly one typed result/error.
-4. Assert the provider key is absent from sandbox input, uploads, commands, files, and environment.
-5. Run the credential broker probe for in-sandbox placement.
-6. Recheck request limits, timeout, cleanup, cancellation, and telemetry.
-
-Do not switch to in-sandbox by injecting `ANTHROPIC_API_KEY`. If brokering is unavailable, keep the agent in-task
-or stop the rollout.
+Add a function to `OPERATIONS` in `sandbox/fileops.py` and a tool in `factory/agents/tools.py` that calls it with
+`ctx.deps.files.request(...)`. Keep it to the standard library, resolve every path with `resolve()`, return only what
+the model needs, and stay under the 256 KB exec output tail. Changing `fileops.py` changes the snapshot scripts hash,
+so the next run rebuilds each repository's snapshot inline.
 
 ## Add a model provider
 
-Add its model string, key variable, exact API hostname, and broker method/path restriction to the provider table.
-Update the Workflow environment-group documentation for in-task use and the sandbox-group credential setup for
-in-sandbox use. Never use wildcard model hosts when an exact host is available.
+Add the provider's Pydantic AI extra to `pydantic-ai-slim` in `pyproject.toml`, use its model string in the agent
+definition, and add its key variable to the `factory-workflows` group. Agent loops run in the Workflow task, so the
+sandbox needs no egress to the provider.
+
+## Add a span
+
+Record factory work Pydantic AI can't see with `logfire.span(...)` in the module that does it, using a message
+template and attributes rather than formatted strings, so Logfire can scrub and query them. Runs already carry the
+factory IDs as baggage. Never attach credentials, request headers, or file contents to a span.
 
 ## Change the event log
 

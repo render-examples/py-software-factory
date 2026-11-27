@@ -1,22 +1,26 @@
 # py-software-factory
 
-A Python port of [render-examples/software-factory](https://github.com/render-examples/software-factory) (baseline
-commit `fd3731d`), with Pydantic AI as the agent loop.
+A GitHub-native software factory on Render: Pydantic AI agents with Pydantic AI Harness capabilities, Render
+Workflows and Sandboxes, and Pydantic Logfire tracing. A Python port of
+[render-examples/software-factory](https://github.com/render-examples/software-factory) (baseline commit `fd3731d`).
 
 ## Status
 
-The security-bearing core, Workflow registration, sandbox/agent runtime, Postgres event log, Blueprint, and
-setup/diagnostic surface are present. They have local automated coverage. This checkout has not been deployed or
-live-verified against Render, GitHub, or credential brokering; Blueprint validation alone is not deployment proof.
+The security-bearing core, Workflow registration, sandbox/agent runtime, Postgres event log, Logfire tracing,
+Blueprint, and setup/diagnostic surface are present. They have local automated coverage. This checkout has not been
+deployed or live-verified against Render, GitHub, or Logfire; Blueprint validation alone is not deployment proof.
 
 ## Architecture
 
 A FastAPI gateway (`factory-gateway`) verifies GitHub webhooks and starts tasks on a Render Workflow
-(`factory-workflows`), which runs the agents with their tools in Render Sandboxes and owns every GitHub write. Both
-services share a Postgres event log (`factory-db`): runs coordinate ownership of an issue or pull request there, and
-the gateway records each delivery's decision there. Trigger labels are commands, removed once a run starts. A comment
-on an issue resumes the run that is waiting for a reply; otherwise it starts nothing. The GitHub status comment is a
-view of Postgres state. See [docs/architecture.md](docs/architecture.md).
+(`factory-workflows`). The Workflow runs each agent's loop and owns every GitHub write; everything an agent does,
+every command and file operation, runs in a Render Sandbox as an unprivileged user, and file operations run where the
+files are instead of moving them to the host. Both services share a Postgres event log (`factory-db`): runs
+coordinate ownership of an issue or pull request there, and the gateway records each delivery's decision there.
+Trigger labels are commands, removed once a run starts. A comment on an issue resumes the run that is waiting for a
+reply; otherwise it starts nothing. The GitHub status comment is a view of Postgres state, and Logfire traces each
+delivery through every task, agent run, model request, and tool call it causes. See
+[docs/architecture.md](docs/architecture.md).
 
 ## Quickstart
 
@@ -38,9 +42,11 @@ uv sync --locked
 make check   # ruff, shellcheck, pyright (strict), pytest
 ```
 
-Tests use fakes for GitHub, Render, and models. The publish tests run `sandbox/collect-changes.sh` against a local
-git repository, so they need `git` and `bash`. `make check` requires `shellcheck`; CI installs it explicitly. The
-event-log tests need a real Postgres server and are skipped without `TEST_DATABASE_URL`; see
+Tests use fakes for GitHub and Render and scripted Pydantic AI models. The agent tests run the real tool loop,
+`sandbox/fileops.py`, and shell commands against a local checkout, and the publish tests run
+`sandbox/collect-changes.sh` against a local git repository, so they need `git` and `bash`; search tests also use
+`rg` when it is installed. `make check` requires `shellcheck`; CI installs it explicitly. The event-log tests need a
+real Postgres server and are skipped without `TEST_DATABASE_URL`; see
 [docs/quickstart.md](docs/quickstart.md#local-postgres).
 
 ## Documentation
@@ -49,14 +55,14 @@ event-log tests need a real Postgres server and are skipped without `TEST_DATABA
 - [Configuration reference](docs/configuration.md)
 - [Architecture and security model](docs/architecture.md)
 - [Deployment/setup runbook](docs/runbooks/setup.md)
-- [Agent and placement extension runbook](docs/runbooks/extensions.md)
+- [Extension runbook](docs/runbooks/extensions.md)
 
 ## Verification
 
 Local checks validate source, configuration, and fake-backed behavior only. `render blueprints validate
 render.yaml` is read-only validation, not a deploy. A live deployment is verified only after gateway health,
-Workflow task registration, database connection and migrations, GitHub App installation, sandbox group, and
-credential-brokering checks pass.
+Workflow task registration, database connection and migrations, GitHub App installation, and sandbox group checks
+pass, and, with tracing on, a delivery appears in Logfire as one trace.
 
 ## Known limits
 
@@ -66,6 +72,6 @@ credential-brokering checks pass.
   the trigger label to run again.
 - The gateway's database credential can write to the event log, so a compromised gateway could forge run events
   (see [docs/architecture.md](docs/architecture.md#security-boundaries)).
-- There is no cross-run spend ledger or durable conversation carry-over.
-- Brokering prevents key theft, not model spend: code in a live, model-enabled sandbox can use the restricted
-  credential until that sandbox terminates.
+- Spend is capped per agent run by its request limit and at the model provider; there is no cross-run spend ledger
+  or durable conversation carry-over.
+- The first run after a deploy that changes a `sandbox/` script rebuilds that repository's snapshot inline.

@@ -17,7 +17,6 @@ from factory.events.catalog import EventSpec, P, Payload
 from factory.threads import ThreadKey, is_thread_key
 
 MAX_PAYLOAD_BYTES: Final = 256 * 1024
-EVENTS_CHANNEL: Final = "events"
 
 
 @dataclass(frozen=True)
@@ -60,7 +59,7 @@ _INSERT: Final = (
 
 
 async def append(tx: Tx, event: NewEvent[Any], *, expected_version: int | None = None) -> LogEvent | None:
-    """Appends one event, updates the projections, and notifies listeners, all in `tx`.
+    """Appends one event and updates the projections, in `tx`.
 
     Returns None when the idempotency key was already used. Raises VersionConflict when the stream isn't at
     `expected_version`; the transaction is then aborted and must be retried from the start.
@@ -88,7 +87,6 @@ async def append(tx: Tx, event: NewEvent[Any], *, expected_version: int | None =
         raise VersionConflict(event.stream)
     logged = to_event(rows[0])
     await project(tx, logged)
-    await tx.query("select pg_notify(%s, %s)", (EVENTS_CHANNEL, f"{logged.stream} {logged.stream_version}"))
     return logged
 
 

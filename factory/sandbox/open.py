@@ -6,11 +6,12 @@ import contextlib
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import cast
 
+import logfire
 from render.experimental.sandbox.errors import SnapshotNotFoundError, SnapshotNotReadyError
 from render.experimental.sandbox.types import NetworkPolicy
 
@@ -24,17 +25,15 @@ from factory.sandbox.shell import shq
 from factory.sandbox.snapshot import (
     SHA1_RE,
     BuiltSnapshot,
-    RunnerBundle,
     SnapshotDeps,
     build_snapshot,
     compute_lockfile_hash,
     credential_file,
     credential_helper_args,
-    ensure_runner_bundle,
     read_token,
     resolve_base_head,
     run_install,
-    runner_requirements_hash,
+    scripts_hash,
     snapshot_name,
 )
 from factory.sandbox.types import (
@@ -59,7 +58,6 @@ class OpenSandboxDeps:
     read_token: Callable[[RepoContext], Awaitable[str]] | None = None
     resolve_base_head: HeadResolver | None = None
     build_snapshot: SnapshotBuilder | None = None
-    runner_bundle: RunnerBundle | None = None
 
 
 class OpenedRenderSandbox(RenderSandbox):
@@ -79,45 +77,66 @@ async def open_sandbox(
     repo: RepoContext,
     ref: SandboxRef,
     *,
-    model_egress: Iterable[str] = (),
     client: SandboxClient | None = None,
     sandbox_group_id: str | None = None,
     deps: OpenSandboxDeps | None = None,
 ) -> OpenedRenderSandbox:
-    """Restore a named snapshot, fetch one trusted ref, scrub, verify, and reinstall if needed."""
+    """Restore a named snapshot, fetch one trusted ref, scrub, verify, and reinstall if needed.
+
+    A snapshot built with other factory scripts is rebuilt once, so a deployment that changes them heals itself.
+    """
     _check_ref(ref)
+    target = f"refs/heads/{ref.name}" if isinstance(ref, BranchRef) else f"pull/{ref.number}@{ref.head_sha}"
+    with logfire.span("open sandbox for {repo} at {ref}", repo=repo.full_name, ref=target) as span:
+        opened = await _open(repo, ref, client, sandbox_group_id, deps)
+        span.set_attributes({"sandbox_id": opened.id, "head_sha": opened.head_sha})
+        return opened
+
+
+async def _open(
+    repo: RepoContext,
+    ref: SandboxRef,
+    client: SandboxClient | None,
+    sandbox_group_id: str | None,
+    deps: OpenSandboxDeps | None,
+) -> OpenedRenderSandbox:
     runtime = client or sandbox_client()
     dependencies = deps or OpenSandboxDeps()
     group_id = sandbox_group_id or configured_group_id()
-    policy = task_egress(repo, model_egress)
-    sandbox_id = await _create_from_snapshot(runtime, repo, group_id, policy, dependencies)
-    sandbox = RenderSandbox(sandbox_id, runtime)
-    try:
-        await runtime.wait_running(sandbox.id)
-        await ensure_runner_bundle(sandbox, dependencies.runner_bundle)
-        verify = await sandbox.exec(
-            f"bash {shq(f'{APP_DIR}/verify.sh')}",
-            timeout_seconds=runtime.timings.verify_timeout_seconds,
-        )
-        require_success(verify, "sandbox verify")
-        manifest = _parse_manifest(await sandbox.download(f"{APP_DIR}/manifest.json"))
-        if manifest.repo != repo.full_name:
-            raise RuntimeError(f"snapshot in {sandbox.id} is for {manifest.repo}, not {repo.full_name}")
-        if manifest.runner_requirements_hash != runner_requirements_hash():
-            raise RuntimeError(
-                "snapshot runner dependencies do not match this deployment; refresh the repository snapshot"
+    policy = task_egress(repo)
+    rebuilt = False
+    while True:
+        sandbox_id = await _create_from_snapshot(runtime, repo, group_id, policy, dependencies)
+        sandbox = RenderSandbox(sandbox_id, runtime)
+        try:
+            await runtime.wait_running(sandbox.id)
+            manifest = _parse_manifest(await sandbox.download(f"{APP_DIR}/manifest.json"))
+            if manifest.repo != repo.full_name:
+                raise RuntimeError(f"snapshot in {sandbox.id} is for {manifest.repo}, not {repo.full_name}")
+            if manifest.scripts_hash != scripts_hash():
+                if rebuilt:
+                    raise RuntimeError(f"the rebuilt snapshot in {sandbox.id} still has other factory scripts")
+                await sandbox.close()
+                logfire.info("snapshot was built with other factory scripts; rebuilding it")
+                await _build(runtime, repo, group_id, dependencies)
+                rebuilt = True
+                continue
+            verify = await sandbox.exec(
+                f"bash {shq(f'{APP_DIR}/verify.sh')}",
+                timeout_seconds=runtime.timings.verify_timeout_seconds,
             )
-        head_sha = await _fetch_ref(sandbox, repo, ref, dependencies)
-        install = repo.config.install.strip() if repo.config.install and repo.config.install.strip() else None
-        if install:
-            lockfile_hash = await compute_lockfile_hash(sandbox)
-            if lockfile_hash != manifest.lockfile_hash or install != manifest.install:
-                await run_install(sandbox, install, egress_hint(repo, policy))
-        return OpenedRenderSandbox(sandbox.id, runtime, head_sha, manifest)
-    except BaseException:
-        with contextlib.suppress(Exception):
-            await sandbox.close()
-        raise
+            require_success(verify, "sandbox verify")
+            head_sha = await _fetch_ref(sandbox, repo, ref, dependencies)
+            install = repo.config.install.strip() if repo.config.install and repo.config.install.strip() else None
+            if install:
+                lockfile_hash = await compute_lockfile_hash(sandbox)
+                if lockfile_hash != manifest.lockfile_hash or install != manifest.install:
+                    await run_install(sandbox, install, egress_hint(repo, policy))
+            return OpenedRenderSandbox(sandbox.id, runtime, head_sha, manifest)
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await sandbox.close()
+            raise
 
 
 @asynccontextmanager
@@ -125,7 +144,6 @@ async def with_sandbox(
     repo: RepoContext,
     ref: SandboxRef,
     *,
-    model_egress: Iterable[str] = (),
     client: SandboxClient | None = None,
     sandbox_group_id: str | None = None,
     deps: OpenSandboxDeps | None = None,
@@ -134,7 +152,6 @@ async def with_sandbox(
     sandbox = await open_sandbox(
         repo,
         ref,
-        model_egress=model_egress,
         client=client,
         sandbox_group_id=sandbox_group_id,
         deps=deps,
@@ -170,22 +187,25 @@ async def _create_from_snapshot(
         return await create()
     except (SnapshotNotFoundError, SnapshotNotReadyError):
         pass
-    resolver = deps.resolve_base_head or resolve_base_head
-    sha = await resolver(repo)
-    builder = deps.build_snapshot or build_snapshot
-    await builder(
-        client,
-        repo,
-        sha,
-        sandbox_group_id=sandbox_group_id,
-        deps=SnapshotDeps(read_token=deps.read_token),
-    )
+    await _build(client, repo, sandbox_group_id, deps)
     try:
         return await create()
     except (SnapshotNotFoundError, SnapshotNotReadyError) as error:
         raise RuntimeError(
             f"no available snapshot named {snapshot_name(repo)} even after building one inline"
         ) from error
+
+
+async def _build(client: SandboxClient, repo: RepoContext, sandbox_group_id: str, deps: OpenSandboxDeps) -> None:
+    """Build the base-branch snapshot inline, at the tip GitHub reports."""
+    sha = await (deps.resolve_base_head or resolve_base_head)(repo)
+    await (deps.build_snapshot or build_snapshot)(
+        client,
+        repo,
+        sha,
+        sandbox_group_id=sandbox_group_id,
+        deps=SnapshotDeps(read_token=deps.read_token),
+    )
 
 
 async def _fetch_ref(
@@ -288,10 +308,11 @@ def _parse_manifest(data: bytes) -> SnapshotManifest:
 
     sha = text("sha")
     lockfile_hash = text("lockfileHash")
-    requirements_hash = text("runnerRequirementsHash")
+    # Snapshots from before the scripts hash have none; they count as built with other scripts.
+    scripts = manifest.get("scriptsHash", "")
     if not SHA1_RE.fullmatch(sha):
         raise RuntimeError("snapshot manifest sha is invalid")
-    if not re_full_sha256(lockfile_hash) or not re_full_sha256(requirements_hash):
+    if not re_full_sha256(lockfile_hash) or not isinstance(scripts, str) or (scripts and not re_full_sha256(scripts)):
         raise RuntimeError("snapshot manifest hash is invalid")
     install = manifest.get("install")
     if install is not None and not isinstance(install, str):
@@ -301,7 +322,7 @@ def _parse_manifest(data: bytes) -> SnapshotManifest:
         base_branch=text("baseBranch"),
         sha=sha,
         lockfile_hash=lockfile_hash,
-        runner_requirements_hash=requirements_hash,
+        scripts_hash=scripts,
         install=install,
         created_at=text("createdAt"),
     )

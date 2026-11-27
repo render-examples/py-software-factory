@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs the small OS tool set plus pinned uv, uv-managed CPython 3.12, and the runner virtualenv.
+# Installs the small OS tool set plus pinned uv and a uv-managed CPython 3.12 virtualenv, which runs fileops.py.
 # Usage: install-tools.sh
 set -euo pipefail
 
@@ -57,7 +57,6 @@ export UV_PYTHON_INSTALL_DIR="$root/python"
 export UV_PYTHON_PREFERENCE=only-managed
 "$uv" python install "$PYTHON_VERSION"
 "$uv" venv --clear --python "$PYTHON_VERSION" --python-preference only-managed "$root/venv"
-"$uv" pip install --python "$root/venv/bin/python" --require-hashes -r "$root/app/runner-requirements.txt"
 
 version=$("$root/venv/bin/python" -c 'import platform; print(platform.python_version())')
 case "$version" in 3.12.*) ;; *) log "expected Python 3.12, got $version"; exit 1 ;; esac

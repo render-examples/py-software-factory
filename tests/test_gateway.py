@@ -14,7 +14,6 @@ import pytest
 from factory.config import RunName, get_config
 from factory.db import Db, Params, Query, Row, Tx
 from factory.gateway import GatewayDeps, create_gateway
-from factory.gateway.hub import EventHub
 from factory.runs.thread import StartingRun, start_on_thread
 from factory.schemas import TriageInput
 from factory.threads import thread_key
@@ -68,10 +67,7 @@ class Gateway:
     def __init__(self, db: Db) -> None:
         self.calls: list[tuple[RunName, dict[str, Any], str]] = []
         self.error: Exception | None = None
-        deps = GatewayDeps(
-            start_run=self.start_run, webhook_secret=SECRET, db=db, hub=EventHub(), events_read_token="reader"
-        )
-        app = create_gateway(deps)
+        app = create_gateway(GatewayDeps(start_run=self.start_run, webhook_secret=SECRET, db=db))
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway")
 
     async def start_run(self, run: RunName, input: dict[str, Any], idempotency_key: str) -> str:

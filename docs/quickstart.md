@@ -51,10 +51,9 @@ uv run setup-github OWNER/REPOSITORY
 uv run doctor
 ```
 
-These are dry-run or read-only unless an explicit `--apply*` option is used. They never deploy. `setup-render` also
-generates `EVENTS_READ_TOKEN` into `.env` if it's missing. See the [setup runbook](runbooks/setup.md) before using an
-apply option. `uv run db-rebuild` is not a dry run: it rewrites the derived tables from the event log (see
-[Database](configuration.md#database)).
+These are dry-run or read-only unless an explicit `--apply*` option is used. They never deploy. See the
+[setup runbook](runbooks/setup.md) before using an apply option. `uv run db-rebuild` is not a dry run: it rewrites
+the derived tables from the event log (see [Database](configuration.md#database)).
 
 ## Deployment readiness
 

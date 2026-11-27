@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import os
 import re
-import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
 from http import HTTPStatus
-from pathlib import Path
 from typing import Protocol, cast
 
 from render import Render
@@ -24,14 +21,13 @@ from render.public_api.client import AuthenticatedClient
 from render.public_api.models import EnvGroup, EnvVar, EnvVarValue, Error, ServiceType
 from render.public_api.types import UNSET, Unset
 
-from factory.sandbox.credentials import ANTHROPIC_CREDENTIAL, credential_matches, ensure_credential
-from scripts.common import SANDBOX_GROUP_RE, fail, parse_env_file, write_private
+from scripts.common import SANDBOX_GROUP_RE, fail
 
 GROUP_NAME = "factory-sandboxes"
 REGION = "oregon"
 GATEWAY_NAME_RE = re.compile(r"^factory-gateway(-[a-z0-9]+)?$")
+GATEWAY_GROUP = "factory-gateway"
 WORKFLOWS_GROUP = "factory-workflows"
-EVENTS_READ_TOKEN = "EVENTS_READ_TOKEN"  # noqa: S105 - the variable name, not a value
 PAGE_SIZE = 100
 
 
@@ -39,10 +35,7 @@ def render_handoff(group_id: str | None = None) -> list[str]:
     group = group_id or "<sbg-id>"
     return [
         "Blueprint env groups: factory-gateway and factory-workflows (created by render.yaml).",
-        (
-            "factory-gateway: RENDER_API_KEY, GITHUB_WEBHOOK_SECRET, "
-            "EVENTS_READ_TOKEN (generated into .env by setup-render)."
-        ),
+        "factory-gateway: RENDER_API_KEY, GITHUB_WEBHOOK_SECRET.",
         (
             "factory-workflows: RENDER_API_KEY, RENDER_WORKSPACE_ID, GITHUB_APP_ID, "
             "GITHUB_APP_PRIVATE_KEY, ANTHROPIC_API_KEY, FACTORY_SANDBOX_GROUP_ID."
@@ -53,8 +46,8 @@ def render_handoff(group_id: str | None = None) -> list[str]:
             "`setup-render --link-database --apply` to copy it into factory-workflows, then redeploy factory-workflows."
         ),
         (
-            "Optional credential broker for in-sandbox loops: api.anthropic.com, inject x-api-key, restrict to "
-            "POST /v1/messages. Use --apply-credential only after enabling brokered placement."
+            "Optional tracing: add a Logfire write token as LOGFIRE_TOKEN to each group, a separate token per "
+            "service so either can be revoked alone."
         ),
         "Never put RENDER_ADMIN_API_KEY in either runtime environment group.",
     ]
@@ -205,38 +198,11 @@ def link_database(
     return [f"Copied {target}.", f"Redeploy {WORKFLOWS_GROUP} so the running service picks up DATABASE_URL."]
 
 
-def ensure_events_read_token(path: Path) -> bool:
-    """Write a generated EVENTS_READ_TOKEN to an env file that has none. The token is never printed."""
-    text = path.read_text() if path.exists() else ""
-    if parse_env_file(text).get(EVENTS_READ_TOKEN, "").strip():
-        return False
-    line = f"{EVENTS_READ_TOKEN}={secrets.token_hex(32)}"
-    empty = re.compile(rf"^[ \t]*(?:export[ \t]+)?{EVENTS_READ_TOKEN}[ \t]*=.*$", re.MULTILINE)
-    if empty.search(text):
-        text = empty.sub(lambda _: line, text)
-    else:
-        separator = "" if not text or text.endswith("\n") else "\n"
-        text = f"{text}{separator}{line}\n"
-    write_private(path, text)
-    return True
-
-
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--group-name", default=GROUP_NAME)
     result.add_argument("--apply-group", action="store_true", help="create the group if absent (mutates Render)")
-    result.add_argument(
-        "--apply-credential",
-        action="store_true",
-        help="create or rotate the restricted Anthropic credential (mutates Render)",
-    )
     result.add_argument("--group-id", help="skip API access and print handoff for this existing group")
-    result.add_argument(
-        "--env-file",
-        type=Path,
-        default=Path(".env"),
-        help="local env file that receives a generated EVENTS_READ_TOKEN if it has none (default: .env)",
-    )
     result.add_argument(
         "--link-database",
         action="store_true",
@@ -258,17 +224,6 @@ def main(argv: list[str] | None = None, *, api: RenderEnvApi | None = None) -> i
         for line in lines:
             print(line)
         return 0
-    try:
-        generated = ensure_events_read_token(args.env_file)
-    except (OSError, ValueError) as error:
-        return fail(f"could not update {args.env_file}: {error}")
-    if generated:
-        print(
-            f"Generated {EVENTS_READ_TOKEN} in {args.env_file} (value not shown). "
-            "Add the same value to the factory-gateway env group."
-        )
-    else:
-        print(f"{EVENTS_READ_TOKEN} is set in {args.env_file}; the factory-gateway env group must hold the same value.")
     if args.group_id:
         if not SANDBOX_GROUP_RE.fullmatch(args.group_id):
             return fail("--group-id must look like sbg-...")
@@ -287,22 +242,6 @@ def main(argv: list[str] | None = None, *, api: RenderEnvApi | None = None) -> i
         print(f"Using sandbox group {args.group_name} ({group_id}).")
     else:
         print(f"Dry run: sandbox group {args.group_name!r} would be created in {REGION}.")
-    if args.apply_credential:
-        if group_id is None:
-            return fail("--apply-credential needs an existing group or --apply-group")
-        secret = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not secret:
-            return fail("ANTHROPIC_API_KEY is required with --apply-credential")
-        try:
-            configured = asyncio.run(ensure_credential(group_id, ANTHROPIC_CREDENTIAL, secret))
-        except Exception as error:
-            return fail(str(error))
-        if not credential_matches(configured, ANTHROPIC_CREDENTIAL):
-            return fail("Render returned credential metadata that does not match the requested restriction")
-        print(
-            f"Configured {configured.id}: {configured.domain}, "
-            f"{','.join(configured.methods)} {','.join(configured.paths)}."
-        )
     for step in render_handoff(group_id):
         print(f"- {step}")
     return 0

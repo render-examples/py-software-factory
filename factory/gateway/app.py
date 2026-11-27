@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+import logfire
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
@@ -18,12 +19,12 @@ from factory.config import RunName
 from factory.db import Db, VersionConflict, append, read_stream
 from factory.events import warn
 from factory.gateway.body import read_body
-from factory.gateway.hub import EventHub
 from factory.gateway.routes import (
     Decision,
     Ignore,
     Invalid,
     Lookup,
+    Start,
     delivery_event,
     delivery_stream,
     recorded_decision,
@@ -31,7 +32,6 @@ from factory.gateway.routes import (
 )
 from factory.gateway.signature import verify_signature
 from factory.gateway.state import thread_state
-from factory.gateway.stream import StreamDeps, stream_router
 
 StartRun = Callable[[RunName, dict[str, Any], str], Awaitable[str]]
 """Starts a task run with an idempotency key, and returns its run ID."""
@@ -50,8 +50,6 @@ class GatewayDeps:
     start_run: StartRun
     webhook_secret: str
     db: Db
-    hub: EventHub
-    events_read_token: str
 
 
 async def decide(db: Db, event: str, payload: Any, delivery_id: str) -> Decision:
@@ -80,7 +78,6 @@ async def decide(db: Db, event: str, payload: Any, delivery_id: str) -> Decision
 
 def create_gateway(deps: GatewayDeps) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-    app.include_router(stream_router(StreamDeps(deps.db, deps.hub, deps.events_read_token)))
 
     # The gateway has no UI; people who open its URL in a browser should see that it's running, not a 404.
     @app.get("/", response_class=PlainTextResponse)
@@ -114,6 +111,10 @@ def create_gateway(deps: GatewayDeps) -> FastAPI:
         except ValueError:
             return JSONResponse({"error": "invalid json"}, status_code=400)
 
+        with logfire.span("GitHub {event} delivery", event=event, delivery_id=delivery_id) as span:
+            return await deliver(event, payload, delivery_id, span)
+
+    async def deliver(event: str, payload: Any, delivery_id: str, span: logfire.LogfireSpan) -> JSONResponse:
         try:
             decision = await decide(deps.db, event, payload, delivery_id)
         except Exception as error:
@@ -121,7 +122,11 @@ def create_gateway(deps: GatewayDeps) -> FastAPI:
             # A 5xx marks the delivery failed in GitHub, where it can be redelivered by hand.
             return JSONResponse({"error": "could not record delivery"}, status_code=502)
         if isinstance(decision, Ignore):
+            span.set_attributes({"decision": "ignore", "reason": decision.reason})
             return JSONResponse({"ignored": decision.reason})
+        span.set_attributes({"decision": "start" if isinstance(decision, Start) else "invalid", "task": decision.run})
+        if decision.thread:
+            span.set_attribute("thread", decision.thread)
         if isinstance(decision, Invalid):
             warn(
                 "authenticated delivery produced an invalid run input",
@@ -145,6 +150,7 @@ def create_gateway(deps: GatewayDeps) -> FastAPI:
                 error=str(error),
             )
             return JSONResponse({"error": "could not start run", "run": decision.run}, status_code=502)
+        span.set_attribute("run_id", run_id)
         return JSONResponse({"run_id": run_id, "run": decision.run}, status_code=202)
 
     return app

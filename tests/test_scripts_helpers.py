@@ -6,7 +6,7 @@ import pytest
 
 import scripts.doctor as doctor
 from scripts.common import Check, normalize_gateway_url, parse_env_file, redact, validate_repository
-from scripts.doctor import _credential_check, _workflows_database_check
+from scripts.doctor import _logfire_checks, _workflows_database_check
 from scripts.preflight import blueprint_checks
 from scripts.setup_app import app_manifest, manifest_form
 from scripts.setup_render import ServiceRef, render_handoff
@@ -97,9 +97,8 @@ def test_render_handoff_never_places_admin_key_in_runtime() -> None:
     handoff = "\n".join(render_handoff("sbg-abc123"))
     assert "FACTORY_SANDBOX_GROUP_ID=sbg-abc123" in handoff
     assert "Never put RENDER_ADMIN_API_KEY" in handoff
-    assert "POST /v1/messages" in handoff
+    assert "LOGFIRE_TOKEN" in handoff
     assert "--link-database --apply" in handoff
-    assert "EVENTS_READ_TOKEN" in handoff
 
 
 def test_redact_replaces_longest_secret_first() -> None:
@@ -161,10 +160,34 @@ def test_doctor_database_section_adds_local_url_hint(monkeypatch: pytest.MonkeyP
     assert migrations.detail == "skipped: database unreachable"
 
 
-async def test_doctor_accepts_intentionally_disabled_brokering() -> None:
-    check = await _credential_check({})
-    assert check.ok
-    assert "disabled" in check.detail
+class GroupKeys:
+    """Env groups by name, holding keys; never values."""
+
+    def __init__(self, keys: dict[str, set[str]]) -> None:
+        self.keys = keys
+
+    def web_services(self) -> list[ServiceRef]:
+        return []
+
+    def service_env_var(self, service_id: str, key: str) -> str | None:
+        return None
+
+    def env_group_id(self, name: str) -> str | None:
+        return f"evg-{name}" if name in self.keys else None
+
+    def env_group_keys(self, group_id: str) -> set[str]:
+        return self.keys[group_id.removeprefix("evg-")]
+
+    def set_env_group_var(self, group_id: str, key: str, value: str) -> None:
+        raise AssertionError("doctor never writes")
+
+
+def test_doctor_reports_which_services_send_traces_without_requiring_it() -> None:
+    api = GroupKeys({"factory-gateway": {"LOGFIRE_TOKEN"}, "factory-workflows": {"DATABASE_URL"}})
+    gateway, workflows = _logfire_checks({}, api)
+    assert (gateway.name, gateway.ok, gateway.required) == ("factory-gateway LOGFIRE_TOKEN", True, False)
+    assert (workflows.ok, workflows.required) == (False, False)
+    assert "sends no traces" in workflows.detail
 
 
 def test_doctor_uses_one_event_loop_for_remote_checks() -> None:

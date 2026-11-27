@@ -1,0 +1,94 @@
+"""Logfire for both services: configuration, instrumentation, trace propagation across tasks, and flushing.
+
+Without LOGFIRE_TOKEN nothing is sent. Traces are a view, like the status comment: nothing reads them back to
+decide what a run does. Modules record their own spans with `logfire.span` directly.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from collections.abc import Generator, Mapping
+from contextlib import contextmanager, suppress
+from typing import TYPE_CHECKING
+
+import logfire
+from logfire.types import StringValue
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+
+TRACEPARENT = re.compile(r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$")
+FLUSH_TIMEOUT_MILLIS = 5_000
+GATEWAY_UNTRACED_URLS = ("/health", "/ready")
+
+_CREDENTIALS = re.compile(
+    r"\bgh[pousr]_[A-Za-z0-9]{20,}"
+    r"|\bgithub_pat_[A-Za-z0-9_]{20,}"
+    r"|\bsk-ant-[A-Za-z0-9_-]{20,}"
+    r"|\brnd_[A-Za-z0-9]{20,}"
+    r"|\bpylf_v\d+_[A-Za-z0-9_]{20,}"
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+    re.DOTALL,
+)
+"""Credential shapes masked in every exported string, on top of Logfire's key-name scrubbing."""
+
+
+def mask_credentials(text: str) -> str:
+    return _CREDENTIALS.sub("[credential redacted]", text)
+
+
+def _transform(item: StringValue) -> str:
+    return mask_credentials(item.value)
+
+
+def configure(service_name: str) -> None:
+    repository = os.environ.get("RENDER_GIT_REPO_SLUG", "").strip()
+    revision = os.environ.get("RENDER_GIT_COMMIT", "").strip()
+    logfire.configure(
+        service_name=service_name,
+        send_to_logfire="if-token-present",
+        console=False,
+        # The gateway is public: never adopt trace context a caller sends. Tasks attach theirs explicitly.
+        distributed_tracing=False,
+        scrubbing=logfire.ScrubbingOptions(transform_string=_transform),
+        code_source=(
+            logfire.CodeSource(repository=f"https://github.com/{repository}", revision=revision)
+            if repository and revision
+            else None
+        ),
+    )
+
+
+def instrument_workflows(*, include_content: bool) -> None:
+    """Agent runs, model requests, and tool calls; plus GitHub, Render, and Anthropic requests, without headers or
+    bodies, which hold credentials."""
+    logfire.instrument_pydantic_ai(include_content=include_content)
+    logfire.instrument_httpx()
+
+
+def instrument_gateway(app: FastAPI) -> None:
+    logfire.instrument_fastapi(app, excluded_urls=GATEWAY_UNTRACED_URLS)
+    logfire.instrument_httpx()
+
+
+def carrier() -> dict[str, str] | None:
+    """The current trace context, to send with a task's input so its run continues this trace."""
+    traceparent = logfire.get_context().get("traceparent")
+    return {"traceparent": traceparent} if traceparent and TRACEPARENT.fullmatch(traceparent) else None
+
+
+@contextmanager
+def attached(context: Mapping[str, str] | None) -> Generator[None]:
+    """Continue the trace a task's input carries, or start a new one."""
+    if context is None:
+        yield
+        return
+    with logfire.attach_context(dict(context)):
+        yield
+
+
+def flush() -> None:
+    """Export what a task recorded before its instance stops. Bounded, and never fails the task."""
+    with suppress(Exception):
+        logfire.force_flush(timeout_millis=FLUSH_TIMEOUT_MILLIS)

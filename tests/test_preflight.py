@@ -76,9 +76,8 @@ def test_missing_workflow_slug_fails() -> None:
     assert _failed(document) == {"workflow slug"}
 
 
-def test_env_lists_include_database_and_stream_token() -> None:
+def test_env_lists_include_the_database() -> None:
     assert "DATABASE_URL" in preflight.GATEWAY_ENV
-    assert "EVENTS_READ_TOKEN" in preflight.GATEWAY_ENV
     assert "DATABASE_URL" in preflight.WORKFLOW_ENV
 
 

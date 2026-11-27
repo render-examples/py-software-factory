@@ -22,14 +22,6 @@ class LogEvent:
     created_at: datetime
 
 
-@dataclass(frozen=True)
-class ThreadCursor:
-    tx: str
-    seq: int
-
-
-START: Final = ThreadCursor("0", 0)
-
 EVENT_COLUMNS: Final = "seq, tx::text as tx, stream, stream_version, thread, type, version, source, payload, created_at"
 
 
@@ -53,17 +45,5 @@ async def read_stream(db: Queryable, stream: str, after_version: int, limit: int
         f"select {EVENT_COLUMNS} from events where stream = %s and stream_version > %s "
         "order by stream_version limit %s",
         (stream, after_version, limit),
-    )
-    return [to_event(row) for row in rows]
-
-
-async def read_thread(db: Queryable, thread: ThreadKey, after: ThreadCursor, limit: int = 500) -> list[LogEvent]:
-    """A thread's events in commit-safe order: nothing at or above the oldest open transaction is returned, so a
-    slow transaction's event is never skipped by a reader that saw a faster, later one."""
-    rows = await db.query(
-        f"select {EVENT_COLUMNS} from events "
-        "where thread = %s and (tx, seq) > (%s::xid8, %s::bigint) and tx < pg_snapshot_xmin(pg_current_snapshot()) "
-        "order by tx, seq limit %s",
-        (thread, after.tx, after.seq, limit),
     )
     return [to_event(row) for row in rows]

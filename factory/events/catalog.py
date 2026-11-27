@@ -5,9 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
-
-from factory.threads import is_thread_key
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Payload(BaseModel):
@@ -32,8 +30,6 @@ def define_event(type: str, version: int, payload: type[P]) -> EventSpec[P]:
 
 
 ID_MAX = 200
-MESSAGE_MAX = 64 * 1024
-TOOL_TEXT_MAX = 32 * 1024
 
 Id = Annotated[str, Field(min_length=1, max_length=ID_MAX)]
 Name = Annotated[str, Field(min_length=1, max_length=100)]
@@ -111,51 +107,6 @@ class RunFinished(Payload):
     waiting: Literal["reply"] | None = None
 
 
-class AgentRunStarted(Payload):
-    run_id: Id
-    agent_id: Id
-    harness: Id
-    model: Id
-    placement: Literal["in-task", "in-sandbox"] | None = None
-
-
-class AssistantMessage(Payload):
-    message_id: Id
-    text: Annotated[str, Field(max_length=MESSAGE_MAX)]
-
-
-class ToolCall(Payload):
-    call_id: Id
-    tool: Id
-    args: Annotated[str, Field(max_length=TOOL_TEXT_MAX)]
-
-
-class ToolResult(Payload):
-    call_id: Id
-    tool: Id
-    is_error: bool
-    output_preview: Annotated[str, Field(max_length=TOOL_TEXT_MAX)]
-
-
-class TokenUsage(Payload):
-    input_tokens: Count
-    output_tokens: Count
-    cache_read_tokens: Count = 0
-    cache_write_tokens: Count = 0
-    cost_usd: Annotated[float, Field(ge=0)] | None = None
-
-
-class AgentRunFinished(Payload):
-    outcome: Annotated[str, Field(min_length=1, max_length=64)]
-    turns: Count
-    usage: TokenUsage
-    cost_usd: Annotated[float, Field(ge=0)]
-    harness_version: Id | None = None
-    message: Annotated[str, Field(max_length=2000)] | None = None
-    invalid_lines: Count | None = None
-    sandbox_requests: Count | None = None
-
-
 delivery_received = define_event("delivery.received", 1, DeliveryReceived)
 
 run_started = define_event("run.started", 1, RunStarted)
@@ -166,40 +117,3 @@ run_sandbox_attached = define_event("run.sandbox_attached", 1, RunSandboxAttache
 run_stopped = define_event("run.stopped", 1, RunStopped)
 run_cleaned_up = define_event("run.cleaned_up", 1, RunCleanedUp)
 run_finished = define_event("run.finished", 1, RunFinished)
-
-agent_run_started = define_event("agent_run.started", 1, AgentRunStarted)
-assistant_message = define_event("assistant.message", 1, AssistantMessage)
-tool_call = define_event("tool.call", 1, ToolCall)
-tool_result = define_event("tool.result", 1, ToolResult)
-usage = define_event("usage", 1, TokenUsage)
-agent_run_finished = define_event("agent_run.finished", 1, AgentRunFinished)
-
-LIVE_CHANNEL = "live"
-"""NOTIFY channel for token deltas. Deltas are never stored."""
-
-
-class LiveDelta(Payload):
-    type: Literal["delta"] = "delta"
-    stream: Id
-    thread: str | None = None
-    message_id: Id
-    local_seq: Count
-    part: Count
-    text: Annotated[str, Field(max_length=8000)]
-
-    @field_validator("thread")
-    @classmethod
-    def _thread_key(cls, value: str | None) -> str | None:
-        if value is not None and not is_thread_key(value):
-            raise ValueError("expected a <channel>:<id> thread key")
-        return value
-
-
-class LiveFinal(Payload):
-    type: Literal["final"] = "final"
-    stream: Id
-    message_id: Id
-
-
-LiveNotice = Annotated[LiveDelta | LiveFinal, Field(discriminator="type")]
-LIVE_NOTICE_ADAPTER: TypeAdapter[LiveDelta | LiveFinal] = TypeAdapter(LiveNotice)

@@ -4,11 +4,9 @@ import asyncio
 import uuid
 from typing import Any
 
-import psycopg
 import pytest
 
 from factory.db import (
-    START,
     Db,
     NewEvent,
     VersionConflict,
@@ -19,7 +17,6 @@ from factory.db import (
     migration_names,
     pending_migrations,
     read_stream,
-    read_thread,
     rebuild,
 )
 from factory.events import Payload, define_event, run_finished, run_progress, run_started
@@ -129,25 +126,6 @@ async def test_concurrent_appends_at_one_expected_version_have_exactly_one_winne
     assert len(await read_stream(db, stream, 0)) == 1
 
 
-async def test_thread_reads_wait_for_an_earlier_transaction_that_commits_later(database_url: str, db: Db) -> None:
-    slow_written, release = asyncio.Event(), asyncio.Event()
-
-    async def slow() -> None:
-        async with db.transaction() as tx:
-            await append(tx, note(new_stream(), "slow", thread=THREAD))
-            slow_written.set()
-            await release.wait()
-
-    holder = asyncio.create_task(slow())
-    await slow_written.wait()
-    async with db.transaction() as tx:
-        await append(tx, note(new_stream(), "fast", thread=THREAD))
-    assert await read_thread(db, THREAD, START) == []
-    release.set()
-    await holder
-    assert [e.payload["text"] for e in await read_thread(db, THREAD, START)] == ["slow", "fast"]
-
-
 async def test_migrate_applies_each_file_once_even_when_run_concurrently() -> None:
     with temporary_database() as url:
         first, second = create_db(url, 1), create_db(url, 1)
@@ -204,16 +182,3 @@ async def test_rebuild_replays_projections_and_keeps_operational_columns(db: Db)
     assert await db.query("select trace_id, run_id, status_comment_id from threads") == [
         {"trace_id": trace_id, "run_id": run_id, "status_comment_id": 42}
     ]
-
-
-async def test_each_append_notifies_listeners(database_url: str, db: Db) -> None:
-    stream = new_stream()
-    listener = await psycopg.AsyncConnection.connect(database_url, autocommit=True)
-    try:
-        await listener.execute("listen events")
-        async with db.transaction() as tx:
-            await append(tx, note(stream, "hi"))
-        notices = [n.payload async for n in listener.notifies(timeout=5, stop_after=1)]
-        assert notices == [f"{stream} 1"]
-    finally:
-        await listener.close()

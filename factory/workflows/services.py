@@ -9,9 +9,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from factory.agents.definition import AgentDefinition, Placement
-from factory.agents.providers import model_hosts
-from factory.config import RepoContext, get_config
+from factory.config import RepoContext
 from factory.github import PullRequest
 from factory.runs import Run
 from factory.sandbox import OpenedRenderSandbox, Sandbox
@@ -42,27 +40,10 @@ def get_services() -> WorkflowServices:
     return _services
 
 
-def effective_placement(definition: AgentDefinition, brokered_model_access: bool) -> Placement:
-    """Use sandbox placement only when the deployment explicitly enables its credential broker."""
-    return definition.placement if brokered_model_access else "in-task"
-
-
-def model_egress(definition: AgentDefinition, brokered_model_access: bool) -> tuple[str, ...]:
-    """Provider egress belongs only on a sandbox that runs the model loop."""
-    return (
-        model_hosts((definition.model,))
-        if effective_placement(definition, brokered_model_access) == "in-sandbox"
-        else ()
-    )
-
-
 def _production_services() -> WorkflowServices:
     """Import evolving agent/sandbox APIs only when a task actually starts."""
-    from typing import Any, cast
+    from typing import cast
 
-    from pydantic import BaseModel
-
-    from factory.agent_runs.record import run_recorded
     from factory.agents import run_agent
     from factory.agents.registry import IMPLEMENTER, PR_REVIEWER, SPEC_WRITER, TRIAGE
     from factory.changeset import publish
@@ -70,70 +51,33 @@ def _production_services() -> WorkflowServices:
     from factory.sandbox import BranchRef, PullRef, build_snapshot, open_sandbox, sandbox_client
     from factory.schemas import Implementation, Review, SpecDraft, TriageDecision
 
-    brokered_model_access = get_config().sandbox.brokered_model_access
-
-    async def recorded(
-        run: Run, definition: AgentDefinition, message: str, sandbox: Sandbox, **options: Any
-    ) -> BaseModel:
-        placement = effective_placement(definition, brokered_model_access)
-        return await run_recorded(
-            run,
-            agent_id=definition.id,
-            model=definition.model,
-            placement=placement,
-            call=lambda on_event: run_agent(
-                definition,
-                message,
-                event_ids=run.event_ids,
-                sandbox=sandbox,
-                placement=placement,
-                on_event=on_event,
-                **options,
-            ),
-        )
+    async def open_for_branch(repo: RepoContext, branch: str) -> OpenedRenderSandbox:
+        return await open_sandbox(repo, BranchRef(branch))
 
     def triage(run: Run) -> TriageDeps:
-        async def open_for_branch(repo: RepoContext, branch: str) -> OpenedRenderSandbox:
-            return await open_sandbox(repo, BranchRef(branch))
-
         async def run_triage(message: str, sandbox: Sandbox) -> TriageDecision:
-            return cast(TriageDecision, await recorded(run, TRIAGE, message, sandbox))
+            return cast(TriageDecision, await run_agent(TRIAGE, message, event_ids=run.event_ids, sandbox=sandbox))
 
         async def run_writer(message: str, sandbox: Sandbox) -> SpecDraft:
-            return cast(SpecDraft, await recorded(run, SPEC_WRITER, message, sandbox))
+            return cast(SpecDraft, await run_agent(SPEC_WRITER, message, event_ids=run.event_ids, sandbox=sandbox))
 
         return TriageDeps(open_for_branch, run_triage, run_writer)
 
     def spec_to_pr(run: Run) -> SpecToPrDeps:
-        git = git_data(run.repo)
-
-        async def open_for_branch(repo: RepoContext, branch: str) -> OpenedRenderSandbox:
-            return await open_sandbox(
-                repo,
-                BranchRef(branch),
-                model_egress=model_egress(IMPLEMENTER, brokered_model_access),
-            )
-
         async def implement(message: str, sandbox: Sandbox) -> Implementation:
-            output = await recorded(run, IMPLEMENTER, message, sandbox, timeout_seconds=60 * 60)
+            output = await run_agent(
+                IMPLEMENTER, message, event_ids=run.event_ids, sandbox=sandbox, timeout_seconds=60 * 60
+            )
             return cast(Implementation, output)
 
-        return SpecToPrDeps(open_for_branch, implement, publish, git, close_git=True)
+        return SpecToPrDeps(open_for_branch, implement, publish, git_data(run.repo), close_git=True)
 
     def pr_review(run: Run) -> PrReviewDeps:
         async def open_for_pull(repo: RepoContext, pull: PullRequest) -> OpenedRenderSandbox:
-            return await open_sandbox(
-                repo,
-                PullRef(
-                    pull.number,
-                    pull.head_sha,
-                    pull.base_ref,
-                ),
-                model_egress=model_egress(PR_REVIEWER, brokered_model_access),
-            )
+            return await open_sandbox(repo, PullRef(pull.number, pull.head_sha, pull.base_ref))
 
         async def review(message: str, sandbox: Sandbox) -> Review:
-            return cast(Review, await recorded(run, PR_REVIEWER, message, sandbox))
+            return cast(Review, await run_agent(PR_REVIEWER, message, event_ids=run.event_ids, sandbox=sandbox))
 
         return PrReviewDeps(open_for_pull, review)
 
