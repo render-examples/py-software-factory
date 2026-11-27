@@ -98,8 +98,8 @@ def blueprint_checks(text: str) -> list[Check]:
         Check("workflow plan", "plan" not in workflow, "service-level plan omitted"),
         Check(
             "secret groups",
-            env_groups == {"py-factory-gateway", "py-factory-workflows"},
-            "gateway and workflow groups linked",
+            env_groups == {"py-factory-gateway", "py-factory-workflows"} and "envVarGroups" not in document,
+            "gateway and workflow groups linked, not declared; `setup-render --env-groups` creates them",
         ),
     ]
 

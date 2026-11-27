@@ -13,13 +13,16 @@ from render import RenderAsync
 from factory import tracing
 from factory.config import RunName, require_env
 from factory.db import create_db, migrate
+from factory.events import warn
 from factory.gateway.app import GatewayDeps, create_gateway
 
 GATEWAY_POOL_SIZE = 10
 
 
 def build() -> Any:
-    webhook_secret = require_env("GITHUB_WEBHOOK_SECRET")
+    webhook_secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "").strip()
+    if not webhook_secret:
+        warn("GITHUB_WEBHOOK_SECRET is not set; webhooks get 503 until it is")
     workflow_slug = require_env("RENDER_WORKFLOW_SLUG")
     db = create_db(require_env("DATABASE_URL"), GATEWAY_POOL_SIZE)
     render = RenderAsync()

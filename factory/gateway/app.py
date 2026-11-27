@@ -82,6 +82,8 @@ def create_gateway(deps: GatewayDeps) -> FastAPI:
 
     @app.post("/webhooks/github")
     async def webhook(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        if not deps.webhook_secret:
+            return JSONResponse({"error": "webhook secret not configured"}, status_code=503)
         event = request.headers.get("x-github-event", "")
         delivery_id = request.headers.get("x-github-delivery", "")
 

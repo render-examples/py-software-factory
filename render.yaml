@@ -1,3 +1,4 @@
+# The env groups must exist before this Blueprint is applied: `uv run setup-render --env-groups --apply`.
 services:
   - type: web
     name: py-factory-gateway
@@ -36,9 +37,3 @@ databases:
     plan: basic-256mb
     postgresMajorVersion: "17"
     ipAllowList: []
-
-envVarGroups:
-  - name: py-factory-gateway
-    envVars: []
-  - name: py-factory-workflows
-    envVars: []

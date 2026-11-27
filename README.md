@@ -1,77 +1,119 @@
 # pydantic-software-factory
 
-A GitHub-native software factory on Render: Pydantic AI agents with Pydantic AI Harness capabilities, Render
-Workflows and Sandboxes, and Pydantic Logfire tracing. A Python port of
-[render-examples/software-factory](https://github.com/render-examples/software-factory) (baseline commit `fd3731d`).
+pydantic-software-factory is a cloud coding agent template built on Pydantic AI and Render.
 
-## Status
+Agents triage issues, write specs, implement them in isolated Render Sandboxes, and review pull requests. The project is designed to be forked and extended to your own coding workflows.
 
-The security-bearing core, Workflow registration, sandbox/agent runtime, Postgres event log, Logfire tracing,
-Blueprint, and setup/diagnostic surface are present. They have local automated coverage. This checkout has not been
-deployed or live-verified against Render, GitHub, or Logfire; Blueprint validation alone is not deployment proof.
+The template handles verifying GitHub webhooks, running agents against sandboxed repositories, coordinating overlapping runs and cancellation, validating agent output, publishing code safely, enforcing spend budgets, and
+tracing every run in Pydantic Logfire. 
 
-## Architecture
+You bring the repositories, prompts, verify commands, and approval gates your
+team needs. 
 
-A FastAPI gateway (`py-factory-gateway`) verifies GitHub webhooks and starts tasks on a Render Workflow
-(`py-factory-workflows`). The Workflow runs each agent's loop and owns every GitHub write; everything an agent does,
-every command and file operation, runs in a Render Sandbox as an unprivileged user, and file operations run where the
-files are instead of moving them to the host. Both services share a Postgres event log (`py-factory-db`): runs
-coordinate ownership of an issue or pull request there, and the gateway records each delivery's decision there.
-Trigger labels are commands, removed once a run starts. A comment on an issue resumes the run that is waiting for a
-reply; otherwise it starts nothing. The GitHub status comment is a view of Postgres state, and Logfire traces each
-delivery through every task, agent run, model request, and tool call it causes. See
-[docs/architecture.md](docs/architecture.md).
+## How it works
 
-## Quickstart
+1. **Label an issue.** `factory:triage` starts Triage, which reads the issue and the repository, then asks up to five questions, declines, or has Spec Writer post a spec. Reply on the issue to answer it or ask for changes.
+2. **Approve the spec.** `factory:spec-approved` starts Implementer, which builds the spec in a sandbox, runs your verify commands, repairs failures up to twice, and opens a draft pull request.
+3. **Review and merge.** `factory:pr-review` starts PR Reviewer, which runs your verify commands against the pull request and posts one COMMENT review. 
 
-```bash
-uv sync --locked
-uv run preflight
-make check
+`factory:autopilot` runs Triage and Implementer back to back, then starts PR Reviewer on the draft pull request. 
+
+### Architecture: Sandbox-as-tool
+
+Each agent's loop runs in a Render Workflows task. Everything the agent *does* runs in a Render Sandbox as an
+unprivileged user: shell commands go through the sandbox, and file reads, edits, and searches run there through a
+small helper (`sandbox/fileops.py`), so file contents never round-trip through the host. The model key stays in
+Workflows, and the sandbox has no route to the model provider.
+
+```text
+GitHub ──webhook──▶ Gateway ──task──▶ Workflows ──commands, file ops──▶ Sandbox
+                       │                 │  agent loop (Pydantic AI + Harness)
+                       │                 └──validated writes──▶ GitHub
+                       └────▶ Postgres ◀─┘  (event log)
+
+        both services ──traces──▶ Logfire
 ```
 
-For deployment, follow [docs/runbooks/setup.md](docs/runbooks/setup.md). Scripts dry-run by default, secret values
-stay in Render environment groups, and no setup command deploys. Existing deployments must follow the
-[upgrade order](docs/runbooks/setup.md#upgrading-an-existing-deployment): the database lands before the code that
-uses it.
+- **Gateway** (`py-factory-gateway`, a web service) verifies each webhook, records it, and starts the matching task.
+- **Workflows** (`py-factory-workflows`) runs the agents and writes to GitHub.
+- **Postgres** (`py-factory-db`) holds an append-only event log. It decides which run owns each issue or pull request.
+- **Sandboxes** start from a per-repository snapshot with your dependencies installed, rebuilt on each push to the base branch.
 
-## Develop
+See [Architecture](docs/architecture.md) for state, agents, and tracing in depth.
 
-```bash
-uv sync --locked
-make check   # ruff, shellcheck, pyright (strict), pytest
-```
+## How work arrives
 
-Tests use fakes for GitHub and Render and scripted Pydantic AI models. The agent tests run the real tool loop,
-`sandbox/fileops.py`, and shell commands against a local checkout, and the publish tests run
-`sandbox/collect-changes.sh` against a local git repository, so they need `git` and `bash`; search tests also use
-`rg` when it is installed. `make check` requires `shellcheck`; CI installs it explicitly. The event-log tests need a
-real Postgres server and are skipped without `TEST_DATABASE_URL`; see
-[docs/quickstart.md](docs/quickstart.md#local-postgres).
+| Trigger | Apply to | Starts |
+|---|---|---|
+| `factory:triage` | Issue | Triage |
+| `factory:spec-approved` | Issue | Implementer, on the issue's current spec |
+| `factory:pr-review` | Open pull request | PR Reviewer, on the head commit |
+| `factory:autopilot` | Issue | Triage and Implementer, then PR Reviewer on the draft pull request |
+| `/factory cancel` | Issue or pull request comment | Cancels the run there |
 
-## Documentation
+- **Labels are commands.** The factory removes a label when its run starts, so apply it again to rerun. It applies the `factory:working` label while a run is in progress.
+- **Replies resume waiting runs.** After Triage asks questions or posts a spec, a comment on the issue resumes it. 
+- **One run at a time.** Starting a run on an issue or pull request stops whatever was already running.
 
-- [Quickstart](docs/quickstart.md)
-- [Configuration reference](docs/configuration.md)
-- [Architecture and security model](docs/architecture.md)
-- [Deployment/setup runbook](docs/runbooks/setup.md)
+Only people with `minimum_permission` on the repository (`write` by default) can start a run, and bots can't.
+
+## Security
+
+- **Credentials stay out of sandboxes.** No model key, GitHub write token, Logfire token, or database credential
+  enters one. Clone credentials are staged for host-controlled fetches and scrubbed before agents run.
+- **Sandboxes reach an allow-list.** By default only `github.com`, plus the hosts you list for each repository.
+- **The host decides every target.** Repositories, branches, and write targets come from configuration or the webhook, never from model output. The host validates every typed result again before acting on it.
+- **Publishing is guarded.** It refuses symlinks, submodules, workflow files, unsafe paths, and oversized changes, and GitHub must reproduce the validated tree SHA before a commit is written.
+- **Issue and pull request text is data.** Prompts tell agents to treat it as untrusted input, not instructions.
+
+
+## Deploy
+
+You need a fork of this repository, a Render workspace with Sandboxes access, a Render API key, a model API key with a provider-side spend limit, admin access to each target repository, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
+
+The [setup runbook](docs/runbooks/setup.md) walks through each step. Every command dry-runs unless you pass an
+`--apply` option, and none of them deploys:
+
+1. **Configure your fork.** Add your repositories to `factory_config.py`, then run `uv sync --locked`,
+   `uv run preflight`, and `make check`.
+2. **Apply the Blueprint.** [`render.yaml`](render.yaml) creates `py-factory-gateway` (Starter web service),
+   `py-factory-workflows` (Workflows), `py-factory-db` (Basic-256mb Postgres), and both environment groups. Then
+   give Workflows the database: `uv run setup-render --link-database --apply`.
+3. **Create the GitHub App.** `uv run setup-app --gateway-url https://YOUR-GATEWAY.onrender.com` builds the manifest;
+   you submit it to GitHub and exchange the one-time code.
+4. **Fill in Render.** `uv run setup-render --apply-group` creates the sandbox group. You add secrets to the two
+   environment groups in the Dashboard.
+5. **Configure each repository.** `uv run setup-github OWNER/REPOSITORY --check`, then `--apply-labels`.
+6. **Verify.** Run `uv run doctor --remote`, confirm all six Workflows tasks registered, and label a disposable issue
+   with `factory:triage`. A deployment is proven by the GitHub result, not a 202 or a queued task.
+
+Sandbox and model usage are billed separately from the services.
+
+## Configure a repository
+
+Each repository is an `OWNER/NAME` entry in [`factory_config.py`](factory_config.py):
+
+| Setting | Required | What it does |
+|---|---|---|
+| `base_branch` | Yes | Branch used for Triage, implementation, and snapshots |
+| `verify` | Yes | Commands that must pass before publishing, and that PR Reviewer runs |
+| `install` | No | Dependency command, run while the snapshot is built |
+| `egress` | No | Extra hosts the repository's sandboxes may reach, or `"allow-all"` |
+
+Labels, the `/factory` command prefix, `minimum_permission`, limits, spend budgets, and trace content live in the same
+file. Agent models are pinned in [`factory/agents/registry.py`](factory/agents/registry.py): Claude Sonnet for Triage
+and PR Reviewer, Claude Opus for Spec Writer and Implementer. See [Configuration](docs/configuration.md) for every
+setting and environment variable.
+
+## Resources
+
+- [Quickstart](docs/quickstart.md) and [setup runbook](docs/runbooks/setup.md)
+- [Configuration](docs/configuration.md): settings, environment groups, the database, spend budgets, and Logfire
+- [Architecture](docs/architecture.md): state, agents, observability, and security boundaries
 - [Extension runbook](docs/runbooks/extensions.md)
+- [Render Workflows](https://render.com/docs/workflows), [Render Sandboxes](https://render.com/docs/sandboxes),
+  [Pydantic AI](https://ai.pydantic.dev), and [Logfire](https://logfire.pydantic.dev)
 
-## Verification
+## License
 
-Local checks validate source, configuration, and fake-backed behavior only. `render blueprints validate
-render.yaml` is read-only validation, not a deploy. A live deployment is verified only after gateway health,
-Workflow task registration, database connection and migrations, GitHub App installation, and sandbox group checks
-pass, and, with tracing on, a delivery appears in Logfire as one trace.
-
-## Known limits
-
-- Postgres is required. Both services need `DATABASE_URL`; the Workflow gets it from
-  `setup-render --link-database --apply`, because a Blueprint can't link a database to a Workflow service.
-- Replies only resume waiting runs. A comment on an issue whose run isn't waiting for a reply does nothing; re-apply
-  the trigger label to run again.
-- The gateway's database credential can write to the event log, so a compromised gateway could forge run events
-  (see [docs/architecture.md](docs/architecture.md#security-boundaries)).
-- Spend budgets stop the next model request once a budget is spent, so concurrent runs can overshoot by about one
-  request each; keep a provider-side limit as well. There is no durable conversation carry-over.
-- The first run after a deploy that changes a `sandbox/` script rebuilds that repository's snapshot inline.
+MIT. See [LICENSE](LICENSE).
